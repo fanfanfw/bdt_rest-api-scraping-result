@@ -1,0 +1,7 @@
+fastapienv/
+
+__pycache__/
+
+.env
+
+test.py

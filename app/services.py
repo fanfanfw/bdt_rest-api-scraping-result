@@ -1,5 +1,6 @@
 import logging
 import asyncpg
+import os
 from app.database import get_local_db_connection
 from fastapi import HTTPException
 import json
@@ -9,8 +10,18 @@ from app.models import RankPriceResponse, RankCarResponse
 from sklearn.preprocessing import RobustScaler
 import numpy as np 
 from datetime import datetime
+import json
 
 logger = logging.getLogger(__name__)
+
+DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
+DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USER", "fanfan")
+DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTNY_PASSWORD", "cenanun")
+DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")
+DB_MUDAHMY = os.getenv("DB_MUDAHMY", "scrap_mudahmy")
+DB_MUDAHMY_USERNAME = os.getenv("DB_MUDAHMY_USER", "funfun")
+DB_MUDAHMY_PASSWORD = os.getenv("DB_MUDAHMY_PASSWORD", "cenanun")
+DB_MUDAHMY_HOST = os.getenv("DB_MUDAHMY_HOST", "47.236.125.23")
 
 def convert_price(price_str):
     if isinstance(price_str, int):
@@ -95,7 +106,6 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             transmission = row[10]
             seat_capacity = row[11]
             gambar = row[12]  
-            gambar_json = json.dumps(gambar)  
             last_scraped_at = parse_datetime(row[13])
             version = row[14]
             created_at = parse_datetime(row[15])
@@ -103,14 +113,16 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             status = row[17]
             previous_price = row[18]
 
-            logger.info(f"id_: {id_}, type: {type(id_)}")
-            logger.info(f"status: {status}, type: {type(status)}")
-            logger.info(f"previous_price: {previous_price}, type: {type(previous_price)}")
-
-            brand = brand.upper() if brand else None
-            millage_int = convert_millage(millage)
             price_int = convert_price(price)
-            
+            year_int = int(year) if year else None  
+            millage_int = convert_millage(millage)
+
+            if isinstance(gambar, str):
+                gambar = json.loads(gambar)  
+
+            if not isinstance(gambar, list):
+                gambar = []  
+
             await conn.execute(f"""
                 INSERT INTO {table_name} (
                     id, listing_url, brand, model, variant, informasi_iklan,
@@ -145,8 +157,8 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     source = EXCLUDED.source
             """, 
             id_, listing_url, brand, model, variant, informasi_iklan,
-            lokasi, price_int, year, millage_int, transmission, seat_capacity,
-            gambar_json, last_scraped_at, version, created_at, sold_at, status,
+            lokasi, price_int, year_int, millage_int, transmission, seat_capacity,
+            gambar, last_scraped_at, version, created_at, sold_at, status,
             previous_price, source)
     finally:
         await conn.close()
@@ -154,12 +166,12 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
 async def sync_data_from_remote():
     logger.info("Proses sinkronisasi dimulai...")
     
-    remote_conn_carlistmy = await get_remote_db_connection('scrap_carlistmy', 'fanfan', '192.168.1.207', 'cenanun')
+    remote_conn_carlistmy = await get_remote_db_connection(f'{DB_CARLISTMY}', f'{DB_CARLISTMY_USERNAME}', f'{DB_CARLISTMY_HOST}', f'{DB_CARLISTMY_PASSWORD}')
     logger.info("Koneksi ke CarlistMY berhasil.")
     data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy) 
     await insert_or_update_data_into_local_db(data_carlistmy, 'cars_carlistmy', 'carlistmy')  
     
-    remote_conn_mudahmy = await get_remote_db_connection('scrap_mudahmy', 'funfun', '47.236.125.23', 'cenanun')
+    remote_conn_mudahmy = await get_remote_db_connection(f'{DB_MUDAHMY}', f'{DB_MUDAHMY_USERNAME}', f'{DB_MUDAHMY_HOST}', f'{DB_MUDAHMY_PASSWORD}')
     logger.info("Koneksi ke MudahMY berhasil.")
     data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy)  
     await insert_or_update_data_into_local_db(data_mudahmy, 'cars_mudahmy', 'mudahmy')  
@@ -188,11 +200,11 @@ async def insert_or_update_price_history(data, table_name):
             old_price = row['old_price']
             new_price = row['new_price']
             changed_at = row['changed_at']
-            
+
             await conn.execute(f"""
                 INSERT INTO {table_name} (car_id, old_price, new_price, changed_at)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT (car_id)  -- Gunakan constraint unik pada car_id
+                ON CONFLICT (car_id) 
                 DO UPDATE SET 
                     old_price = EXCLUDED.old_price,
                     new_price = EXCLUDED.new_price,

@@ -592,8 +592,6 @@ async def search_cars_carlistmy(
         conditions = []
         values = []
 
-        # Contoh implementasi: brand pakai ILIKE (case-insensitive exact),
-        # model & variant pakai exact, dsb. Sesuaikan kebutuhan Anda.
         if brand:
             conditions.append(f"brand ILIKE ${len(values)+1}")
             values.append(brand)
@@ -613,14 +611,12 @@ async def search_cars_carlistmy(
             conditions.append(f"year = ${len(values)+1}")
             values.append(year)
         if location:
-            # Jika Anda punya kolom 'lokasi' di cars_carlistmy
             conditions.append(f"lokasi ILIKE ${len(values)+1}")
             values.append(f"%{location}%")  
 
         if conditions:
             base_query += " WHERE " + " AND ".join(conditions)
 
-        # Hitung total data
         count_query = f"SELECT COUNT(*) FROM ({base_query}) AS sub"
         total_items = await conn.fetchval(count_query, *values)
 
@@ -649,7 +645,7 @@ async def search_cars_carlistmy(
                     price=row["price"],
                     millage=row["millage"],
                     year=row["year"],
-                    lokasi=row["lokasi"]  # Pastikan kolom ini memang ada
+                    lokasi=row["lokasi"]  
                 )
             )
 
@@ -705,11 +701,6 @@ async def get_price_summary_mudahmy(
     """
     conn = await get_local_db_connection()
     try:
-        # Bagian inti: kita punya 3 query (stats, median, dan count).
-        # 1) base_query_stats -> min, max, avg
-        # 2) base_query_median -> median
-        # 3) base_query_count -> total listing
-
         base_query_stats = """
             SELECT 
                 MIN(price) AS min_price,
@@ -730,9 +721,6 @@ async def get_price_summary_mudahmy(
             FROM cars_mudahmy
         """
 
-        # Kita tambahkan syarat "price IS NOT NULL" supaya ringkasan harga valid.
-        # Jika Anda ingin count semua listing (termasuk yang price NULL),
-        # maka syarat "price IS NOT NULL" cukup di stats & median saja.
         conditions = ["price IS NOT NULL"]
         values = []
 
@@ -750,21 +738,16 @@ async def get_price_summary_mudahmy(
             conditions.append(f"year = ${len(values)+1}")
             values.append(year)
 
-        # Gabungkan kondisi ke masing-masing query
         if conditions:
             where_clause = " AND ".join(conditions)
             base_query_stats += f" WHERE {where_clause}"
             base_query_median += f" WHERE {where_clause}"
             base_query_count += f" WHERE {where_clause}"
 
-        # Eksekusi query stats
         row_stats = await conn.fetchrow(base_query_stats, *values)
-        # Eksekusi query median
         row_median = await conn.fetchrow(base_query_median, *values)
-        # Eksekusi query count
         row_count = await conn.fetchrow(base_query_count, *values)
 
-        # Jika ternyata tidak ada data cocok, row_stats["min_price"] akan None
         if not row_stats or row_stats["min_price"] is None:
             return PriceSummary(
                 total_listing=0,
@@ -871,10 +854,6 @@ async def get_price_summary_carlistmy(
                 COUNT(*) AS total_listing
             FROM cars_carlistmy
         """
-
-        # Jika Anda hanya mau ringkasan harga untuk listing yang "price IS NOT NULL",
-        # masukkan syarat ini ke semua query. Jika mau total listing semua (termasuk price NULL),
-        # silakan bedakan syarat. Contoh di sini kita samakan untuk keseragaman.
         conditions = ["price IS NOT NULL"]
         values = []
 
@@ -897,12 +876,10 @@ async def get_price_summary_carlistmy(
             base_query_median += f" WHERE {where_clause}"
             base_query_count += f" WHERE {where_clause}"
 
-        # Eksekusi query
         row_stats = await conn.fetchrow(base_query_stats, *values)
         row_median = await conn.fetchrow(base_query_median, *values)
         row_count = await conn.fetchrow(base_query_count, *values)
 
-        # Jika tidak ada data cocok, min_price akan None
         if not row_stats or row_stats["min_price"] is None:
             return PriceSummary(
                 total_listing=0,

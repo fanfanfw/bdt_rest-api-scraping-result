@@ -65,7 +65,7 @@ async def rank_price_mudahmy(request: RankPriceRequest):
 @router.get(
     "/cars/search_mudahmy",
     response_model=SearchCarsResponse,
-    description="Mencari mobil di tabel cars_mudahmy dengan filter dinamis dan pagination."
+    description="Searching for cars in the mudahmy table with dynamic filters and pagination."
 )
 async def search_mudahmy(
     brand: Optional[str] = None,
@@ -78,14 +78,6 @@ async def search_mudahmy(
     page: int = 1,
     size: int = 10,
 ):
-    """
-    Endpoint untuk mencari mobil di tabel `cars_mudahmy` berdasarkan filter:
-    - brand, model, variant (exact match)
-    - min_price, max_price
-    - year
-    - location (partial match)
-    - pagination (page, size)
-    """
     result = await search_cars_mudahmy(
         brand=brand,
         model=model,
@@ -102,7 +94,7 @@ async def search_mudahmy(
 @router.get(
     "/cars/search_carlistmy",
     response_model=SearchCarsCarlistMyResponse,
-    description="Mencari mobil di tabel cars_carlistmy dengan filter dinamis dan pagination."
+    description="Searching for cars in carlistmy table with dynamic filters and pagination."
 )
 async def search_carlistmy(
     brand: Optional[str] = Query(None, description="Filter berdasarkan brand (ILIKE)"),
@@ -115,14 +107,6 @@ async def search_carlistmy(
     page: int = 1,
     size: int = 10
 ):
-    """
-    Endpoint untuk mencari mobil di tabel `cars_carlistmy` berdasarkan filter:
-    - brand, model, variant
-    - min_price, max_price
-    - year
-    - location
-    - pagination (page, size)
-    """
     result = await search_cars_carlistmy(
         brand=brand,
         model=model,
@@ -139,7 +123,7 @@ async def search_carlistmy(
 @router.get(
     "/analytics/mudahmy/brand_distribution",
     response_model=List[BrandCount],
-    description="Menampilkan jumlah listing per-brand di cars_mudahmy."
+    description="Displaying the number of listings per brand on mudahmy."
 )
 async def brand_distribution_mudahmy():
     """
@@ -151,7 +135,7 @@ async def brand_distribution_mudahmy():
 @router.get(
     "/analytics/mudahmy/price_summary",
     response_model=PriceSummary,
-    description="Menampilkan ringkasan statistik harga (min, max, avg, median) di cars_mudahmy dengan filter opsional, plus total listing."
+    description="Displays summary price statistics (min, max, avg, median) in cars_mudahmy with optional filters, plus total listings."
 )
 async def price_summary_mudahmy(
     brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
@@ -175,7 +159,7 @@ async def price_summary_mudahmy(
 @router.get(
     "/analytics/mudahmy/top_locations",
     response_model=List[LocationCount],
-    description="Menampilkan lokasi teratas yang paling banyak listing di cars_mudahmy."
+    description="Showing the top locations with the most listings on mudahmy."
 )
 async def top_locations_mudahmy(limit: int = Query(10, description="Jumlah lokasi teratas")):
     """
@@ -186,7 +170,7 @@ async def top_locations_mudahmy(limit: int = Query(10, description="Jumlah lokas
 @router.get(
     "/analytics/carlistmy/brand_distribution",
     response_model=List[BrandCount],
-    description="Menampilkan jumlah listing per-brand di cars_carlistmy."
+    description="Showing the number of listings per brand in carlistmy."
 )
 async def brand_distribution_carlistmy():
     """
@@ -199,7 +183,7 @@ async def brand_distribution_carlistmy():
 @router.get(
     "/analytics/carlistmy/price_summary",
     response_model=PriceSummary,
-    description="Menampilkan ringkasan statistik harga di cars_carlistmy (min, max, avg, median, total_listing), dengan filter opsional."
+    description="Displays a summary of price statistics on carlistmy (min, max, avg, median, total_listings), with optional filters."
 )
 async def price_summary_carlistmy(
     brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
@@ -222,7 +206,7 @@ async def price_summary_carlistmy(
 @router.get(
     "/analytics/carlistmy/top_locations",
     response_model=List[LocationCount],
-    description="Menampilkan lokasi teratas dengan jumlah listing terbanyak di cars_carlistmy."
+    description="Showing top locations with the most listings on carlistmy."
 )
 async def top_locations_carlistmy(limit: int = Query(10, description="Jumlah lokasi teratas")):
     """

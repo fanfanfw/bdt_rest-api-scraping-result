@@ -1,17 +1,21 @@
 import logging
 import asyncpg
 import os
-from app.database import get_local_db_connection
-from fastapi import HTTPException
-import json
-from app.config import DATABASE_URL
 import re
-from app.models import RankPriceResponse, RankCarResponse
-from sklearn.preprocessing import RobustScaler
-import numpy as np 
-from datetime import datetime
 import json
-
+import numpy as np 
+import math
+from datetime import datetime
+from typing import Optional, List
+from fastapi import HTTPException
+from app.config import DATABASE_URL
+from sklearn.preprocessing import RobustScaler
+from app.database import get_local_db_connection
+from app.models import (
+    RankPriceResponse, RankCarResponse, SearchCarsResponse, CarMudahMy, CarCarlistMy, 
+    SearchCarsCarlistMyResponse, BrandCount, PriceSummary, LocationCount,
+    BrandCount, PriceSummary, LocationCount
+)
 logger = logging.getLogger(__name__)
 
 DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
@@ -213,7 +217,7 @@ async def insert_or_update_price_history(data, table_name):
     finally:
         await conn.close()
 
-async def get_price_rank(request):
+async def get_price_rank_carlistmy(request):
     brand = request.get("brand")
     model = request.get("model")
     variant = request.get("variant")
@@ -337,5 +341,611 @@ async def get_price_rank(request):
             bottom_5=bottom_5_with_rank,
             message=message
         )
+    finally:
+        await conn.close()
+
+async def get_price_rank_mudahmy(request: dict) -> RankPriceResponse:
+    brand = request.get("brand")
+    model = request.get("model")
+    variant = request.get("variant")
+    price = request.get("price")
+    millage = request.get("millage")
+    year = request.get("year")
+    
+    if not (brand and model and variant and price and millage and year):
+        raise HTTPException(
+            status_code=400,
+            detail="Brand, model, variant, price, millage, and year must be provided."
+        )
+
+    price = convert_price(price)
+    millage = convert_millage(millage)
+
+    if price is None:
+        raise HTTPException(status_code=400, detail="Invalid price format. Price must contain 'RM'.")
+    if millage is None:
+        raise HTTPException(status_code=400, detail="Invalid millage format.")
+
+    conn = await get_local_db_connection()
+
+    try:
+        query = """
+            SELECT id, brand, model, variant, price, millage, year
+            FROM cars_mudahmy
+            WHERE brand = $1 AND model = $2 AND variant = $3 AND year = $4
+        """
+        rows = await conn.fetch(query, brand, model, variant, year)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="No cars found for the specified brand, model, variant, and year.")
+        
+        df = pd.DataFrame(rows, columns=["id", "brand", "model", "variant", "price", "millage", "year"])
+
+        # Scaling price & millage
+        scaler = RobustScaler()
+        df[["scaled_price", "scaled_millage"]] = scaler.fit_transform(df[["price", "millage"]])
+
+        weight_price = 0.6
+        weight_millage = 0.4
+        df["skor"] = (df["scaled_price"] * weight_price) + (df["scaled_millage"] * weight_millage)
+
+        # Urutkan berdasar skor
+        df = df.sort_values(by="skor", ascending=True).reset_index(drop=True)
+
+        # Ranking
+        df["ranking"] = df["skor"].rank(method="dense", ascending=True).astype(int)
+
+        # Cari mobil yang paling dekat dengan input user (price & millage)
+        def calculate_distance(row):
+            return np.sqrt((row["price"] - price) ** 2 + (row["millage"] - millage) ** 2)
+
+        df["distance"] = df.apply(calculate_distance, axis=1)
+        closest_car = df.loc[df["distance"].idxmin()]
+
+        user_rank = closest_car["ranking"]
+        total_listings = len(df)
+        total_rank = df["ranking"].nunique()
+
+        message = (
+            f"You are in rank position {user_rank} out of {total_rank} ranks, "
+            f"with a total of {total_listings} listings."
+        )
+
+        # Jika data < 10, langsung kembalikan semua data
+        if total_listings < 10:
+            all_data = [
+                RankCarResponse(
+                    id=row["id"],
+                    brand=row["brand"],
+                    model=row["model"],
+                    variant=row["variant"],
+                    price=row["price"],
+                    millage=row["millage"],
+                    year=row["year"],
+                    ranking=row["ranking"]
+                )
+                for _, row in df.iterrows()
+            ]
+            return RankPriceResponse(
+                user_rank=user_rank,
+                message=message,
+                top_5=None,
+                bottom_5=None,
+                all_data=all_data  
+            )
+
+        # top_5 dan bottom_5
+        top_5 = df.head(5)
+        bottom_5 = df.tail(5)
+
+        top_5_with_rank = [
+            RankCarResponse(
+                id=row["id"],
+                brand=row["brand"],
+                model=row["model"],
+                variant=row["variant"],
+                price=row["price"],
+                millage=row["millage"],
+                year=row["year"],
+                ranking=row["ranking"]
+            )
+            for _, row in top_5.iterrows()
+        ]
+        
+        bottom_5_with_rank = [
+            RankCarResponse(
+                id=row["id"],
+                brand=row["brand"],
+                model=row["model"],
+                variant=row["variant"],
+                price=row["price"],
+                millage=row["millage"],
+                year=row["year"],
+                ranking=row["ranking"]
+            )
+            for _, row in bottom_5.iterrows()
+        ]
+
+        return RankPriceResponse(
+            user_rank=user_rank,
+            top_5=top_5_with_rank,
+            bottom_5=bottom_5_with_rank,
+            message=message
+        )
+    finally:
+        await conn.close()
+
+async def search_cars_mudahmy(
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    min_price: Optional[int] = None,
+    max_price: Optional[int] = None,
+    year: Optional[int] = None,
+    location: Optional[str] = None,
+    page: int = 1,
+    size: int = 10
+) -> SearchCarsResponse:
+    """
+    Mencari mobil di tabel cars_mudahmy dengan filter dinamis.
+    Menggunakan pagination (page, size).
+    """
+
+    conn = await get_local_db_connection()
+    try:
+        base_query = """
+            SELECT id, brand, model, variant, price, millage, year, lokasi
+            FROM cars_mudahmy
+        """
+        conditions = []
+        values = []
+
+        if brand:
+            conditions.append(f"brand ILIKE ${len(values)+1}")
+            values.append(brand)
+        if model:
+            conditions.append(f"model = ${len(values)+1}")
+            values.append(model)
+        if variant:
+            conditions.append(f"variant = ${len(values)+1}")
+            values.append(variant)
+        if min_price is not None:
+            conditions.append(f"price >= ${len(values)+1}")
+            values.append(min_price)
+        if max_price is not None:
+            conditions.append(f"price <= ${len(values)+1}")
+            values.append(max_price)
+        if year is not None:
+            conditions.append(f"year = ${len(values)+1}")
+            values.append(year)
+        if location:
+            conditions.append(f"lokasi ILIKE ${len(values)+1}")
+            values.append(f"%{location}%")  
+
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        count_query = f"SELECT COUNT(*) FROM ({base_query}) AS sub"
+        total_items = await conn.fetchval(count_query, *values)
+
+        if total_items == 0:
+            return SearchCarsResponse(
+                page=page,
+                size=size,
+                total_pages=0,
+                total_items=0,
+                data=[]
+            )
+
+        offset = (page - 1) * size
+        base_query += f" ORDER BY id ASC LIMIT {size} OFFSET {offset}"
+
+        rows = await conn.fetch(base_query, *values)
+
+        cars = []
+        for row in rows:
+            cars.append(
+                CarMudahMy(
+                    id=row["id"],
+                    brand=row["brand"],
+                    model=row["model"],
+                    variant=row["variant"],
+                    price=row["price"],
+                    millage=row["millage"],
+                    year=row["year"],
+                    lokasi=row["lokasi"]
+                )
+            )
+
+        total_pages = math.ceil(total_items / size)
+        return SearchCarsResponse(
+            page=page,
+            size=size,
+            total_pages=total_pages,
+            total_items=total_items,
+            data=cars
+        )
+    finally:
+        await conn.close()
+
+async def search_cars_carlistmy(
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    min_price: Optional[int] = None,
+    max_price: Optional[int] = None,
+    year: Optional[int] = None,
+    location: Optional[str] = None,
+    page: int = 1,
+    size: int = 10
+) -> SearchCarsCarlistMyResponse:
+    """
+    Mencari mobil di tabel cars_carlistmy dengan filter dinamis.
+    Menggunakan pagination (page, size).
+    """
+    conn = await get_local_db_connection()
+    try:
+        base_query = """
+            SELECT id, brand, model, variant, price, millage, year, lokasi
+            FROM cars_carlistmy
+        """
+        conditions = []
+        values = []
+
+        # Contoh implementasi: brand pakai ILIKE (case-insensitive exact),
+        # model & variant pakai exact, dsb. Sesuaikan kebutuhan Anda.
+        if brand:
+            conditions.append(f"brand ILIKE ${len(values)+1}")
+            values.append(brand)
+        if model:
+            conditions.append(f"model = ${len(values)+1}")
+            values.append(model)
+        if variant:
+            conditions.append(f"variant = ${len(values)+1}")
+            values.append(variant)
+        if min_price is not None:
+            conditions.append(f"price >= ${len(values)+1}")
+            values.append(min_price)
+        if max_price is not None:
+            conditions.append(f"price <= ${len(values)+1}")
+            values.append(max_price)
+        if year is not None:
+            conditions.append(f"year = ${len(values)+1}")
+            values.append(year)
+        if location:
+            # Jika Anda punya kolom 'lokasi' di cars_carlistmy
+            conditions.append(f"lokasi ILIKE ${len(values)+1}")
+            values.append(f"%{location}%")  
+
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        # Hitung total data
+        count_query = f"SELECT COUNT(*) FROM ({base_query}) AS sub"
+        total_items = await conn.fetchval(count_query, *values)
+
+        if total_items == 0:
+            return SearchCarsCarlistMyResponse(
+                page=page,
+                size=size,
+                total_pages=0,
+                total_items=0,
+                data=[]
+            )
+
+        offset = (page - 1) * size
+        base_query += f" ORDER BY id ASC LIMIT {size} OFFSET {offset}"
+
+        rows = await conn.fetch(base_query, *values)
+
+        cars = []
+        for row in rows:
+            cars.append(
+                CarCarlistMy(
+                    id=row["id"],
+                    brand=row["brand"],
+                    model=row["model"],
+                    variant=row["variant"],
+                    price=row["price"],
+                    millage=row["millage"],
+                    year=row["year"],
+                    lokasi=row["lokasi"]  # Pastikan kolom ini memang ada
+                )
+            )
+
+        total_pages = math.ceil(total_items / size)
+        return SearchCarsCarlistMyResponse(
+            page=page,
+            size=size,
+            total_pages=total_pages,
+            total_items=total_items,
+            data=cars
+        )
+    finally:
+        await conn.close()
+
+async def get_brand_distribution_mudahmy() -> List[BrandCount]:
+    """
+    Mengembalikan jumlah listing untuk setiap brand di tabel cars_mudahmy.
+    Urutkan dari brand paling banyak listing ke yang paling sedikit.
+    """
+    conn = await get_local_db_connection()
+    try:
+        query = """
+            SELECT brand, COUNT(*) AS total
+            FROM cars_mudahmy
+            WHERE brand IS NOT NULL
+            GROUP BY brand
+            ORDER BY total DESC
+        """
+        rows = await conn.fetch(query)
+
+        results = []
+        for row in rows:
+            results.append(
+                BrandCount(
+                    brand=row["brand"],
+                    count=row["total"]
+                )
+            )
+        return results
+    finally:
+        await conn.close()
+
+async def get_price_summary_mudahmy(
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None
+) -> PriceSummary:
+    """
+    Mengembalikan ringkasan statistik harga (min, max, avg, median) dari tabel cars_mudahmy,
+    dengan filter opsional: brand, model, variant, year.
+    Menambahkan total_listing juga.
+    """
+    conn = await get_local_db_connection()
+    try:
+        # Bagian inti: kita punya 3 query (stats, median, dan count).
+        # 1) base_query_stats -> min, max, avg
+        # 2) base_query_median -> median
+        # 3) base_query_count -> total listing
+
+        base_query_stats = """
+            SELECT 
+                MIN(price) AS min_price,
+                MAX(price) AS max_price,
+                AVG(price) AS avg_price
+            FROM cars_mudahmy
+        """
+
+        base_query_median = """
+            SELECT 
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY price) AS median_price
+            FROM cars_mudahmy
+        """
+
+        base_query_count = """
+            SELECT 
+                COUNT(*) AS total_listing
+            FROM cars_mudahmy
+        """
+
+        # Kita tambahkan syarat "price IS NOT NULL" supaya ringkasan harga valid.
+        # Jika Anda ingin count semua listing (termasuk yang price NULL),
+        # maka syarat "price IS NOT NULL" cukup di stats & median saja.
+        conditions = ["price IS NOT NULL"]
+        values = []
+
+        # Filter brand, model, variant, year (exact match)
+        if brand:
+            conditions.append(f"brand = ${len(values)+1}")
+            values.append(brand)
+        if model:
+            conditions.append(f"model = ${len(values)+1}")
+            values.append(model)
+        if variant:
+            conditions.append(f"variant = ${len(values)+1}")
+            values.append(variant)
+        if year:
+            conditions.append(f"year = ${len(values)+1}")
+            values.append(year)
+
+        # Gabungkan kondisi ke masing-masing query
+        if conditions:
+            where_clause = " AND ".join(conditions)
+            base_query_stats += f" WHERE {where_clause}"
+            base_query_median += f" WHERE {where_clause}"
+            base_query_count += f" WHERE {where_clause}"
+
+        # Eksekusi query stats
+        row_stats = await conn.fetchrow(base_query_stats, *values)
+        # Eksekusi query median
+        row_median = await conn.fetchrow(base_query_median, *values)
+        # Eksekusi query count
+        row_count = await conn.fetchrow(base_query_count, *values)
+
+        # Jika ternyata tidak ada data cocok, row_stats["min_price"] akan None
+        if not row_stats or row_stats["min_price"] is None:
+            return PriceSummary(
+                total_listing=0,
+                min_price=None,
+                max_price=None,
+                avg_price=None,
+                median_price=None
+            )
+
+        return PriceSummary(
+            total_listing=row_count["total_listing"],
+            min_price=row_stats["min_price"],
+            max_price=row_stats["max_price"],
+            avg_price=row_stats["avg_price"],
+            median_price=row_median["median_price"]
+        )
+    finally:
+        await conn.close()
+
+async def get_top_locations_mudahmy(limit: int = 10) -> List[LocationCount]:
+    """
+    Mengembalikan daftar lokasi teratas (paling banyak listing) di tabel cars_mudahmy.
+    """
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT lokasi, COUNT(*) AS total
+            FROM cars_mudahmy
+            WHERE lokasi IS NOT NULL
+            GROUP BY lokasi
+            ORDER BY total DESC
+            LIMIT {limit}
+        """
+        rows = await conn.fetch(query)
+
+        results = []
+        for row in rows:
+            results.append(
+                LocationCount(
+                    location=row["lokasi"],
+                    count=row["total"]
+                )
+            )
+        return results
+    finally:
+        await conn.close()
+
+async def get_brand_distribution_carlistmy() -> List[BrandCount]:
+    """
+    Mengembalikan jumlah listing untuk setiap brand di tabel cars_carlistmy.
+    Urutkan dari brand dengan listing terbanyak ke paling sedikit.
+    """
+    conn = await get_local_db_connection()
+    try:
+        query = """
+            SELECT brand, COUNT(*) AS total
+            FROM cars_carlistmy
+            WHERE brand IS NOT NULL
+            GROUP BY brand
+            ORDER BY total DESC
+        """
+        rows = await conn.fetch(query)
+
+        results = []
+        for row in rows:
+            results.append(
+                BrandCount(
+                    brand=row["brand"],
+                    count=row["total"]
+                )
+            )
+        return results
+    finally:
+        await conn.close()
+
+async def get_price_summary_carlistmy(
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None
+) -> PriceSummary:
+    """
+    Mengembalikan ringkasan statistik harga (min, max, avg, median) dari tabel cars_carlistmy,
+    dengan filter opsional: brand, model, variant, year. Termasuk total_listing.
+    """
+    conn = await get_local_db_connection()
+    try:
+        base_query_stats = """
+            SELECT 
+                MIN(price) AS min_price,
+                MAX(price) AS max_price,
+                AVG(price) AS avg_price
+            FROM cars_carlistmy
+        """
+
+        base_query_median = """
+            SELECT 
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY price) AS median_price
+            FROM cars_carlistmy
+        """
+
+        base_query_count = """
+            SELECT 
+                COUNT(*) AS total_listing
+            FROM cars_carlistmy
+        """
+
+        # Jika Anda hanya mau ringkasan harga untuk listing yang "price IS NOT NULL",
+        # masukkan syarat ini ke semua query. Jika mau total listing semua (termasuk price NULL),
+        # silakan bedakan syarat. Contoh di sini kita samakan untuk keseragaman.
+        conditions = ["price IS NOT NULL"]
+        values = []
+
+        if brand:
+            conditions.append(f"brand = ${len(values)+1}")
+            values.append(brand)
+        if model:
+            conditions.append(f"model = ${len(values)+1}")
+            values.append(model)
+        if variant:
+            conditions.append(f"variant = ${len(values)+1}")
+            values.append(variant)
+        if year:
+            conditions.append(f"year = ${len(values)+1}")
+            values.append(year)
+
+        if conditions:
+            where_clause = " AND ".join(conditions)
+            base_query_stats += f" WHERE {where_clause}"
+            base_query_median += f" WHERE {where_clause}"
+            base_query_count += f" WHERE {where_clause}"
+
+        # Eksekusi query
+        row_stats = await conn.fetchrow(base_query_stats, *values)
+        row_median = await conn.fetchrow(base_query_median, *values)
+        row_count = await conn.fetchrow(base_query_count, *values)
+
+        # Jika tidak ada data cocok, min_price akan None
+        if not row_stats or row_stats["min_price"] is None:
+            return PriceSummary(
+                total_listing=0,
+                min_price=None,
+                max_price=None,
+                avg_price=None,
+                median_price=None
+            )
+
+        return PriceSummary(
+            total_listing=row_count["total_listing"],
+            min_price=row_stats["min_price"],
+            max_price=row_stats["max_price"],
+            avg_price=row_stats["avg_price"],
+            median_price=row_median["median_price"]
+        )
+    finally:
+        await conn.close()
+
+async def get_top_locations_carlistmy(limit: int = 10) -> List[LocationCount]:
+    """
+    Mengembalikan daftar lokasi teratas di tabel cars_carlistmy.
+    """
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT lokasi, COUNT(*) AS total
+            FROM cars_carlistmy
+            WHERE lokasi IS NOT NULL
+            GROUP BY lokasi
+            ORDER BY total DESC
+            LIMIT {limit}
+        """
+        rows = await conn.fetch(query)
+
+        results = []
+        for row in rows:
+            results.append(
+                LocationCount(
+                    location=row["lokasi"],
+                    count=row["total"]
+                )
+            )
+        return results
     finally:
         await conn.close()

@@ -16,7 +16,8 @@ router = APIRouter()
 @router.post(
     "/cars/brands_models_variants", 
     response_model=BrandsModelsVariantsResponse,
-    description="Fetch available brands, models, and variants based on the source. souurce : mudahmy or source : carlistmy"
+    description="Fetch available brands, models, and variants based on the source. souurce : mudahmy or source : carlistmy",
+    tags=["Data Access"]
 )
 async def get_brands_models_variants(request: SourceRequest):
     """
@@ -36,7 +37,8 @@ async def sync_data():
 
 @router.post("/cars/rank_price_carlistmy",
              response_model=RankPriceResponse,
-             description="car ranking From Carlist site based on brand, model, variant, and year. then enter the price you want to sell in integer format."
+             description="car ranking From Carlist site based on brand, model, variant, and year. then enter the price you want to sell in integer format.",
+             tags=["Ranking / Analysis"]
              )
 async def rank_price(request: RankPriceRequest):
     """
@@ -51,7 +53,8 @@ async def rank_price(request: RankPriceRequest):
 @router.post(
     "/cars/rank_price_mudahmy",
     response_model=RankPriceResponse,
-    description="Car ranking from MudahMY site based on brand, model, variant, and year. Then enter the price in integer format."
+    description="Car ranking from MudahMY site based on brand, model, variant, and year. Then enter the price in integer format.",
+    tags=["Ranking / Analysis"]
 )
 async def rank_price_mudahmy(request: RankPriceRequest):
     """
@@ -65,7 +68,8 @@ async def rank_price_mudahmy(request: RankPriceRequest):
 @router.get(
     "/cars/search_mudahmy",
     response_model=SearchCarsResponse,
-    description="Searching for cars in the mudahmy table with dynamic filters and pagination."
+    description="Searching for cars in the mudahmy table with dynamic filters and pagination.",
+    tags=["Data Access"]
 )
 async def search_mudahmy(
     brand: Optional[str] = None,
@@ -94,7 +98,8 @@ async def search_mudahmy(
 @router.get(
     "/cars/search_carlistmy",
     response_model=SearchCarsCarlistMyResponse,
-    description="Searching for cars in carlistmy table with dynamic filters and pagination."
+    description="Searching for cars in carlistmy table with dynamic filters and pagination.",
+    tags=["Data Access"]
 )
 async def search_carlistmy(
     brand: Optional[str] = Query(None, description="Filter berdasarkan brand (ILIKE)"),
@@ -123,7 +128,8 @@ async def search_carlistmy(
 @router.get(
     "/analytics/mudahmy/brand_distribution",
     response_model=List[BrandCount],
-    description="Displaying the number of listings per brand on mudahmy."
+    description="Displaying the number of listings per brand on mudahmy.",
+    tags=["Analytics Umum"]
 )
 async def brand_distribution_mudahmy():
     """
@@ -135,7 +141,8 @@ async def brand_distribution_mudahmy():
 @router.get(
     "/analytics/mudahmy/price_summary",
     response_model=PriceSummary,
-    description="Displays summary price statistics (min, max, avg, median) in cars_mudahmy with optional filters, plus total listings."
+    description="Displays summary price statistics (min, max, avg, median) in cars_mudahmy with optional filters, plus total listings.",
+    tags=["Analytics Umum"]
 )
 async def price_summary_mudahmy(
     brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
@@ -159,7 +166,8 @@ async def price_summary_mudahmy(
 @router.get(
     "/analytics/mudahmy/top_locations",
     response_model=List[LocationCount],
-    description="Showing the top locations with the most listings on mudahmy."
+    description="Showing the top locations with the most listings on mudahmy.",
+    tags=["Analytics Umum"]
 )
 async def top_locations_mudahmy(limit: int = Query(10, description="Jumlah lokasi teratas")):
     """
@@ -170,7 +178,8 @@ async def top_locations_mudahmy(limit: int = Query(10, description="Jumlah lokas
 @router.get(
     "/analytics/carlistmy/brand_distribution",
     response_model=List[BrandCount],
-    description="Showing the number of listings per brand in carlistmy."
+    description="Showing the number of listings per brand in carlistmy.",
+    tags=["Analytics Umum"]
 )
 async def brand_distribution_carlistmy():
     """
@@ -183,7 +192,8 @@ async def brand_distribution_carlistmy():
 @router.get(
     "/analytics/carlistmy/price_summary",
     response_model=PriceSummary,
-    description="Displays a summary of price statistics on carlistmy (min, max, avg, median, total_listings), with optional filters."
+    description="Displays a summary of price statistics on carlistmy (min, max, avg, median, total_listings), with optional filters.",
+    tags=["Analytics Umum"]
 )
 async def price_summary_carlistmy(
     brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
@@ -206,7 +216,8 @@ async def price_summary_carlistmy(
 @router.get(
     "/analytics/carlistmy/top_locations",
     response_model=List[LocationCount],
-    description="Showing top locations with the most listings on carlistmy."
+    description="Showing top locations with the most listings on carlistmy.",
+    tags=["Analytics Umum"]
 )
 async def top_locations_carlistmy(limit: int = Query(10, description="Jumlah lokasi teratas")):
     """

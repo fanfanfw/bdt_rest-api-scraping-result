@@ -19,13 +19,13 @@ from app.models import (
 logger = logging.getLogger(__name__)
 
 DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
-DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USER", "fanfan")
+DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USERNAME", "fanfan")
 DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTNY_PASSWORD", "cenanun")
 DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")
 DB_MUDAHMY = os.getenv("DB_MUDAHMY", "scrap_mudahmy")
-DB_MUDAHMY_USERNAME = os.getenv("DB_MUDAHMY_USER", "funfun")
+DB_MUDAHMY_USERNAME = os.getenv("DB_MUDAHMY_USERNAME", "fanfan")
 DB_MUDAHMY_PASSWORD = os.getenv("DB_MUDAHMY_PASSWORD", "cenanun")
-DB_MUDAHMY_HOST = os.getenv("DB_MUDAHMY_HOST", "47.236.125.23")
+DB_MUDAHMY_HOST = os.getenv("DB_MUDAHMY_HOST", "192.168.1.207")
 
 def convert_price(price_str):
     if isinstance(price_str, int):
@@ -115,7 +115,6 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             created_at = parse_datetime(row[15])
             sold_at = parse_datetime(row[16])
             status = row[17]
-            previous_price = row[18]
 
             price_int = convert_price(price)
             year_int = int(year) if year else None  
@@ -132,11 +131,11 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     id, listing_url, brand, model, variant, informasi_iklan,
                     lokasi, price, year, millage, transmission, seat_capacity,
                     gambar, last_scraped_at, version, created_at, sold_at, status,
-                    previous_price, source
+                    source
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18, $19, $20
+                    $13, $14, $15, $16, $17, $18, $19
                 )
                 ON CONFLICT (id)
                 DO UPDATE SET
@@ -157,42 +156,55 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     created_at = EXCLUDED.created_at,
                     sold_at = EXCLUDED.sold_at,
                     status = EXCLUDED.status,
-                    previous_price = EXCLUDED.previous_price,
                     source = EXCLUDED.source
             """, 
             id_, listing_url, brand, model, variant, informasi_iklan,
             lokasi, price_int, year_int, millage_int, transmission, seat_capacity,
             gambar, last_scraped_at, version, created_at, sold_at, status,
-            previous_price, source)
+            source)
     finally:
         await conn.close()
 
+
 async def sync_data_from_remote():
     logger.info("Proses sinkronisasi dimulai...")
-    
-    remote_conn_carlistmy = await get_remote_db_connection(f'{DB_CARLISTMY}', f'{DB_CARLISTMY_USERNAME}', f'{DB_CARLISTMY_HOST}', f'{DB_CARLISTMY_PASSWORD}')
+
+    # Sinkronisasi dengan CarlistMY
+    remote_conn_carlistmy = await get_remote_db_connection(f'{DB_CARLISTMY}', f'{DB_CARLISTMY_USERNAME}',
+                                                           f'{DB_CARLISTMY_HOST}', f'{DB_CARLISTMY_PASSWORD}')
     logger.info("Koneksi ke CarlistMY berhasil.")
-    data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy) 
-    await insert_or_update_data_into_local_db(data_carlistmy, 'cars_carlistmy', 'carlistmy')  
-    
-    remote_conn_mudahmy = await get_remote_db_connection(f'{DB_MUDAHMY}', f'{DB_MUDAHMY_USERNAME}', f'{DB_MUDAHMY_HOST}', f'{DB_MUDAHMY_PASSWORD}')
-    logger.info("Koneksi ke MudahMY berhasil.")
-    data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy)  
-    await insert_or_update_data_into_local_db(data_mudahmy, 'cars_mudahmy', 'mudahmy')  
-    
-    logger.info("Menyalin data price_history CarlistMY...")
-    data_price_history_carlistmy = await fetch_price_history_from_remote_db(remote_conn_carlistmy)
+    data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy)
+    await insert_or_update_data_into_local_db(data_carlistmy, 'cars_carlistmy', 'carlistmy')
+
+    logger.info("Menyalin data price_history dari CarlistMY...")
+    data_price_history_carlistmy = await fetch_price_history_from_remote_db(remote_conn_carlistmy, 'carlistmy')
     await insert_or_update_price_history(data_price_history_carlistmy, 'price_history_carlistmy')
 
-    logger.info("Menyalin data price_history MudahMY...")
-    data_price_history_mudahmy = await fetch_price_history_from_remote_db(remote_conn_mudahmy)  
+    # Sinkronisasi dengan MudahMY
+    remote_conn_mudahmy = await get_remote_db_connection(f'{DB_MUDAHMY}', f'{DB_MUDAHMY_USERNAME}',
+                                                         f'{DB_MUDAHMY_HOST}', f'{DB_MUDAHMY_PASSWORD}')
+    logger.info("Koneksi ke MudahMY berhasil.")
+    data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy)
+    await insert_or_update_data_into_local_db(data_mudahmy, 'cars_mudahmy', 'mudahmy')
+
+    logger.info("Menyalin data price_history dari MudahMY...")
+    data_price_history_mudahmy = await fetch_price_history_from_remote_db(remote_conn_mudahmy, 'mudahmy')
     await insert_or_update_price_history(data_price_history_mudahmy, 'price_history_mudahmy')
 
     logger.info("Proses sinkronisasi selesai.")
     return {"status": "Data synced successfully"}
 
-async def fetch_price_history_from_remote_db(conn):
-    query = "SELECT car_id, old_price, new_price, changed_at FROM public.price_history"
+async def fetch_price_history_from_remote_db(conn, source):
+    """
+    Mengambil data price history berdasarkan sumbernya, apakah carlistmy atau mudahmy.
+    """
+    if source == 'carlistmy':
+        query = "SELECT car_id, old_price, new_price, changed_at FROM public.price_history_combined"
+    elif source == 'mudahmy':
+        query = "SELECT car_id, old_price, new_price, changed_at FROM public.price_history_combined"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid source for price history.")
+
     rows = await conn.fetch(query)
     return rows
 
@@ -208,7 +220,7 @@ async def insert_or_update_price_history(data, table_name):
             await conn.execute(f"""
                 INSERT INTO {table_name} (car_id, old_price, new_price, changed_at)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT (car_id) 
+                ON CONFLICT (car_id, changed_at) 
                 DO UPDATE SET 
                     old_price = EXCLUDED.old_price,
                     new_price = EXCLUDED.new_price,

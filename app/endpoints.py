@@ -1,20 +1,128 @@
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from app.services import (
-    fetch_brands_models_variants_by_source, sync_data_from_remote, get_price_rank_carlistmy, 
-    get_price_rank_mudahmy, search_cars_mudahmy, search_cars_carlistmy,get_brand_distribution_mudahmy,
-    get_price_summary_mudahmy, get_top_locations_mudahmy,
-    get_brand_distribution_carlistmy, get_price_summary_carlistmy, get_top_locations_carlistmy
+    fetch_brands_models_variants_by_source, sync_data_from_remote, get_price_rank_carlistmy,
+    get_price_rank_mudahmy,
+    get_top_locations_carlistmy, get_top_price_drops, get_price_drop_top,
+    get_top_locations_by_brand, get_brand_model_distribution, get_available_brands_models, get_optimal_price_recommendations
 )
 from app.models import (
-    BrandsModelsVariantsResponse, ResponseMessage, RankPriceResponse, 
-    RankPriceRequest, SourceRequest, SearchCarsResponse, SearchCarsCarlistMyResponse,
-    BrandCount, PriceSummary, LocationCount
+    BrandsModelsVariantsResponse, ResponseMessage, RankPriceResponse,
+    RankCarResponse, RankPriceRequest, SourceRequest,
+    BrandCount, LocationCount, PriceDropItem, OptimalPriceItem
 )
+from app.services import get_cars_for_datatables
+from app.database import get_local_db_connection
 router = APIRouter()
+# app.include_router(router)
+# app.include_router(router, prefix="/api")
+
+@router.get("/analytics/{source}/optimal_price_recommendations", response_model=List[OptimalPriceItem])
+async def optimal_price_recommendations(source: str):
+    if source not in ["carlistmy", "mudahmy"]:
+        raise HTTPException(status_code=400, detail="Invalid source. Use 'carlistmy' or 'mudahmy'")
+
+    try:
+        data = await get_optimal_price_recommendations(source)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@router.get(
+    "/analytics/{source}/available_brands_models",
+    description="Menampilkan daftar brand dan model yang tersedia untuk dropdown filter lokasi",
+    tags=["Dropdown Support"]
+)
+async def available_brands_models(source: str):
+    return await get_available_brands_models(source)
+
+@router.get("/analytics/{source}/brand_model_distribution", response_model=List[BrandCount], tags=["Analytics Umum"])
+async def brand_model_distribution(source: str):
+    return await get_brand_model_distribution(source)
+
+@router.get("/analytics/{source}/top_locations_by_brand", response_model=List[LocationCount], tags=["Analytics Umum"])
+async def top_locations_by_brand(source: str, brand: str, model: Optional[str] = None):
+    return await get_top_locations_by_brand(source, brand, model)
+
+@router.get("/analytics/{source}/price_drop_top", response_model=List[PriceDropItem], tags=["Analytics Umum"])
+async def top_price_drop(source: str, limit: int = 10):
+    return await get_top_price_drops(source, limit)
+
+@router.get(
+    "/analytics/{source}/price_drop_top",
+    response_model=List[RankCarResponse],
+    description="Menampilkan 10 penurunan harga terbesar dari listing aktif",
+    tags=["Analytics Umum"]
+)
+async def price_drop_top(source: str, limit: int = 10):
+    return await get_price_drop_top(source, limit)
+
+@router.get("/analytics/{source}/price_vs_millage", response_model=List[dict])
+async def price_vs_millage(source: str):
+    if source not in ["mudahmy", "carlistmy"]:
+        raise HTTPException(status_code=400, detail="Source must be 'mudahmy' or 'carlistmy'")
+
+    table = f"cars_{source}"
+    query = f"""
+        SELECT price, millage FROM {table}
+        WHERE price IS NOT NULL AND millage IS NOT NULL
+    """
+
+    conn = await get_local_db_connection()
+    try:
+        rows = await conn.fetch(query)
+        return [{"price": row["price"], "millage": row["millage"]} for row in rows]
+    finally:
+        await conn.close()
+
+@router.get("/analytics/summary_count")
+async def summary_count(source: str = Query(...)):
+    conn = await get_local_db_connection()
+    try:
+        table = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")
+        active = await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE status = 'available'")
+        sold = await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE status = 'sold'")
+        return {
+            "total": total,
+            "active": active,
+            "sold": sold
+        }
+    finally:
+        await conn.close()
+
+@router.get("/cars/datatables")
+async def datatables_server_side(
+    request: Request,
+    source: str = Query(...),
+    draw: int = Query(1),
+    start: int = Query(0),
+    length: int = Query(10),
+    search: str = Query("", alias="search[value]"),
+    order_col: int = Query(0, alias="order[0][column]"),
+    order_dir: str = Query("asc", alias="order[0][dir]")
+):
+    try:
+        total, filtered, data = await get_cars_for_datatables(
+            source=source,
+            start=start,
+            length=length,
+            search=search,
+            order_column=order_col,
+            order_dir=order_dir
+        )
+
+        return {
+            "draw": draw,
+            "recordsTotal": total,
+            "recordsFiltered": filtered,
+            "data": data
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 @router.post(
-    "/cars/brands_models_variants", 
+    "/cars/brands_models_variants",
     response_model=BrandsModelsVariantsResponse,
     description="Fetch available brands, models, and variants based on the source. souurce : mudahmy or source : carlistmy",
     tags=["Data Access"]
@@ -49,7 +157,7 @@ async def rank_price(request: RankPriceRequest):
         return result
     except HTTPException as e:
         raise e
-    
+
 @router.post(
     "/cars/rank_price_mudahmy",
     response_model=RankPriceResponse,
@@ -64,154 +172,6 @@ async def rank_price_mudahmy(request: RankPriceRequest):
         return await get_price_rank_mudahmy(request.dict())
     except HTTPException as e:
         raise e
-    
-@router.get(
-    "/cars/search_mudahmy",
-    response_model=SearchCarsResponse,
-    description="Searching for cars in the mudahmy table with dynamic filters and pagination.",
-    tags=["Data Access"]
-)
-async def search_mudahmy(
-    brand: Optional[str] = None,
-    model: Optional[str] = None,
-    variant: Optional[str] = None,
-    min_price: Optional[int] = None,
-    max_price: Optional[int] = None,
-    year: Optional[int] = None,
-    location: Optional[str] = None,
-    page: int = 1,
-    size: int = 10,
-):
-    result = await search_cars_mudahmy(
-        brand=brand,
-        model=model,
-        variant=variant,
-        min_price=min_price,
-        max_price=max_price,
-        year=year,
-        location=location,
-        page=page,
-        size=size
-    )
-    return result
-
-@router.get(
-    "/cars/search_carlistmy",
-    response_model=SearchCarsCarlistMyResponse,
-    description="Searching for cars in carlistmy table with dynamic filters and pagination.",
-    tags=["Data Access"]
-)
-async def search_carlistmy(
-    brand: Optional[str] = Query(None, description="Filter berdasarkan brand (ILIKE)"),
-    model: Optional[str] = Query(None, description="Filter berdasarkan model (exact match)"),
-    variant: Optional[str] = Query(None, description="Filter berdasarkan varian (exact match)"),
-    min_price: Optional[int] = Query(None, description="Harga minimum"),
-    max_price: Optional[int] = Query(None, description="Harga maksimum"),
-    year: Optional[int] = Query(None, description="Tahun pembuatan"),
-    location: Optional[str] = Query(None, description="Filter lokasi (partial match)"),
-    page: int = 1,
-    size: int = 10
-):
-    result = await search_cars_carlistmy(
-        brand=brand,
-        model=model,
-        variant=variant,
-        min_price=min_price,
-        max_price=max_price,
-        year=year,
-        location=location,
-        page=page,
-        size=size
-    )
-    return result
-
-@router.get(
-    "/analytics/mudahmy/brand_distribution",
-    response_model=List[BrandCount],
-    description="Displaying the number of listings per brand on mudahmy.",
-    tags=["Analytics Umum"]
-)
-async def brand_distribution_mudahmy():
-    """
-    Endpoint untuk mendapatkan jumlah listing per brand.
-    Urutkan dari yang terbanyak ke yang paling sedikit.
-    """
-    return await get_brand_distribution_mudahmy()
-
-@router.get(
-    "/analytics/mudahmy/price_summary",
-    response_model=PriceSummary,
-    description="Displays summary price statistics (min, max, avg, median) in cars_mudahmy with optional filters, plus total listings.",
-    tags=["Analytics Umum"]
-)
-async def price_summary_mudahmy(
-    brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
-    model: Optional[str] = Query(None, description="Filter model (exact match)"),
-    variant: Optional[str] = Query(None, description="Filter variant (exact match)"),
-    year: Optional[int] = Query(None, description="Filter tahun (exact match)")
-):
-    """
-    Endpoint untuk menampilkan ringkasan statistik harga di tabel `cars_mudahmy`.
-    Dapat memfilter berdasarkan brand, model, variant, year.
-    Menyertakan total_listing agar tahu berapa jumlah listing yang ter-filter.
-    """
-    result = await get_price_summary_mudahmy(
-        brand=brand,
-        model=model,
-        variant=variant,
-        year=year
-    )
-    return result
-
-@router.get(
-    "/analytics/mudahmy/top_locations",
-    response_model=List[LocationCount],
-    description="Showing the top locations with the most listings on mudahmy.",
-    tags=["Analytics Umum"]
-)
-async def top_locations_mudahmy(limit: int = Query(10, description="Jumlah lokasi teratas")):
-    """
-    Endpoint untuk mendapatkan daftar lokasi dengan listing terbanyak.
-    """
-    return await get_top_locations_mudahmy(limit)
-
-@router.get(
-    "/analytics/carlistmy/brand_distribution",
-    response_model=List[BrandCount],
-    description="Showing the number of listings per brand in carlistmy.",
-    tags=["Analytics Umum"]
-)
-async def brand_distribution_carlistmy():
-    """
-    Endpoint untuk mendapatkan jumlah listing per brand di `cars_carlistmy`.
-    Urutkan dari yang terbanyak ke yang paling sedikit.
-    """
-    return await get_brand_distribution_carlistmy()
-
-
-@router.get(
-    "/analytics/carlistmy/price_summary",
-    response_model=PriceSummary,
-    description="Displays a summary of price statistics on carlistmy (min, max, avg, median, total_listings), with optional filters.",
-    tags=["Analytics Umum"]
-)
-async def price_summary_carlistmy(
-    brand: Optional[str] = Query(None, description="Filter brand (exact match)"),
-    model: Optional[str] = Query(None, description="Filter model (exact match)"),
-    variant: Optional[str] = Query(None, description="Filter variant (exact match)"),
-    year: Optional[int] = Query(None, description="Filter tahun (exact match)")
-):
-    """
-    Endpoint untuk menampilkan ringkasan statistik harga di tabel `cars_carlistmy`.
-    Bisa memfilter berdasarkan brand, model, variant, year.
-    """
-    return await get_price_summary_carlistmy(
-        brand=brand,
-        model=model,
-        variant=variant,
-        year=year
-    )
-
 
 @router.get(
     "/analytics/carlistmy/top_locations",

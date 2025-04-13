@@ -1,6 +1,10 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
+class NewClientRequest(BaseModel):
+    client_name: str
+    rate_limit: Optional[int] = 1000  # default jika tidak dikirim
+
 class BrandModelVariantResponse(BaseModel):
     brand: str
     model: str
@@ -75,3 +79,4 @@ class OptimalPriceItem(BaseModel):
     median_harga: float
     harga_terendah: float
     harga_tertinggi: float
+

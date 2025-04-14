@@ -4,7 +4,8 @@ from app.services import (
     fetch_brands_models_variants_by_source, sync_data_from_remote, get_price_rank_carlistmy,
     get_price_rank_mudahmy,
     get_top_locations_carlistmy, get_top_price_drops, get_price_drop_top,
-    get_top_locations_by_brand, get_brand_model_distribution, get_available_brands_models, get_optimal_price_recommendations
+    get_top_locations_by_brand, get_brand_model_distribution, get_available_brands_models, get_optimal_price_recommendations,
+    get_price_vs_millage_filtered, get_all_dropdown_options
 )
 from app.models import (
     BrandsModelsVariantsResponse, ResponseMessage, RankPriceResponse,
@@ -16,6 +17,35 @@ from app.database import get_local_db_connection
 router = APIRouter()
 # app.include_router(router)
 # app.include_router(router, prefix="/api")
+
+@router.get(
+    "/analytics/{source}/dropdown_options",
+    description="Mengembalikan data brand, model, variant, dan year dalam satu endpoint untuk kebutuhan dropdown",
+    tags=["Dropdown Support"]
+)
+async def dropdown_options(
+    source: str,
+    brand: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    variant: Optional[str] = Query(None)
+):
+    return await get_all_dropdown_options(source, brand, model, variant)
+
+@router.get(
+    "/analytics/{source}/price_vs_millage_filtered",
+    response_model=List[dict],
+    description="Menampilkan price vs millage berdasarkan filter brand, model, variant, dan year (opsional)",
+    tags=["Analytics Umum"]
+)
+async def price_vs_millage_filtered(
+    source: str,
+    brand: str = Query(...),
+    model: str = Query(...),
+    variant: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+):
+    return await get_price_vs_millage_filtered(source, brand, model, variant, year)
+
 
 @router.get("/analytics/{source}/optimal_price_recommendations", response_model=List[OptimalPriceItem])
 async def optimal_price_recommendations(source: str):

@@ -840,3 +840,105 @@ async def get_optimal_price_recommendations(source: Literal["carlistmy", "mudahm
         ]
     finally:
         await conn.close()
+
+async def get_price_vs_millage_filtered(
+    source: str,
+    brand: str,
+    model: str,
+    variant: Optional[str] = None,
+    year: Optional[int] = None
+) -> List[dict]:
+    if source not in ["mudahmy", "carlistmy"]:
+        raise HTTPException(status_code=400, detail="Invalid source")
+
+    table = f"cars_{source}"
+    conditions = ["brand = $1", "model = $2"]
+    values = [brand, model]
+
+    if variant:
+        conditions.append(f"variant ILIKE ${len(values) + 1}")
+        values.append(f"%{variant}%")
+
+    if year:
+        conditions.append(f"year = ${len(values) + 1}")
+        values.append(year)
+
+    where_clause = " AND ".join(conditions)
+    query = f"""
+        SELECT price, millage
+        FROM {table}
+        WHERE price IS NOT NULL AND millage IS NOT NULL AND {where_clause}
+    """
+
+    conn = await get_local_db_connection()
+    try:
+        rows = await conn.fetch(query, *values)
+        return [{"price": row["price"], "millage": row["millage"]} for row in rows]
+    finally:
+        await conn.close()
+
+# untuk price_vs_millage
+async def get_all_dropdown_options(
+    source: str,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None
+) -> dict:
+    table = f"cars_{source}"
+    conn = await get_local_db_connection()
+    try:
+        result = {}
+
+        # Ambil semua brand
+        brand_query = f"SELECT DISTINCT brand FROM {table} WHERE brand IS NOT NULL ORDER BY brand ASC"
+        brands = await conn.fetch(brand_query)
+        result["brands"] = [row["brand"] for row in brands]
+
+        # Ambil model kalau brand disediakan
+        if brand:
+            model_query = f"""
+                SELECT DISTINCT model FROM {table}
+                WHERE brand = $1 AND model IS NOT NULL
+                ORDER BY model ASC
+            """
+            models = await conn.fetch(model_query, brand)
+            result["models"] = [row["model"] for row in models]
+        else:
+            result["models"] = []
+
+        # Ambil variant kalau brand & model disediakan
+        if brand and model:
+            variant_query = f"""
+                SELECT DISTINCT variant FROM {table}
+                WHERE brand = $1 AND model = $2 AND variant IS NOT NULL
+                ORDER BY variant ASC
+            """
+            variants = await conn.fetch(variant_query, brand, model)
+            result["variants"] = [row["variant"] for row in variants]
+        else:
+            result["variants"] = []
+
+        # Ambil year kalau brand & model disediakan (variant opsional)
+        if brand and model:
+            if variant:
+                year_query = f"""
+                    SELECT DISTINCT year FROM {table}
+                    WHERE brand = $1 AND model = $2 AND variant ILIKE $3 AND year IS NOT NULL
+                    ORDER BY year DESC
+                """
+                years = await conn.fetch(year_query, brand, model, f"%{variant}%")
+            else:
+                year_query = f"""
+                    SELECT DISTINCT year FROM {table}
+                    WHERE brand = $1 AND model = $2 AND year IS NOT NULL
+                    ORDER BY year DESC
+                """
+                years = await conn.fetch(year_query, brand, model)
+            result["years"] = [int(row["year"]) for row in years if row["year"] is not None]
+        else:
+            result["years"] = []
+
+        return result
+
+    finally:
+        await conn.close()

@@ -96,9 +96,9 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
         for row in data:
             id_ = row[0]
             listing_url = row[1]
-            brand = row[2]
-            model = row[3]
-            variant = row[4]
+            brand = row[2].upper() if row[2] else None
+            model = row[3].upper() if row[3] else None
+            variant = row[4].upper() if row[4] else None
             informasi_iklan = row[5]
             lokasi = row[6]
             price = row[7]
@@ -106,7 +106,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             millage = row[9]
             transmission = row[10]
             seat_capacity = row[11]
-            gambar = row[12]  
+            gambar = row[12]
             last_scraped_at = parse_datetime(row[13])
             version = row[14]
             created_at = parse_datetime(row[15])
@@ -114,14 +114,14 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             status = row[17]
 
             price_int = convert_price(price)
-            year_int = int(year) if year else None  
+            year_int = int(year) if year else None
             millage_int = convert_millage(millage)
 
             if isinstance(gambar, str):
-                gambar = json.loads(gambar)  
+                gambar = json.loads(gambar)
 
             if not isinstance(gambar, list):
-                gambar = []  
+                gambar = []
 
             await conn.execute(f"""
                 INSERT INTO {table_name} (
@@ -154,14 +154,13 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     sold_at = EXCLUDED.sold_at,
                     status = EXCLUDED.status,
                     source = EXCLUDED.source
-            """, 
+            """,
             id_, listing_url, brand, model, variant, informasi_iklan,
             lokasi, price_int, year_int, millage_int, transmission, seat_capacity,
             gambar, last_scraped_at, version, created_at, sold_at, status,
             source)
     finally:
         await conn.close()
-
 
 async def sync_data_from_remote():
     logger.info("Proses sinkronisasi dimulai...")

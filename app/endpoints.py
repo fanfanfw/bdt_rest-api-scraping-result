@@ -42,7 +42,7 @@ async def price_vs_millage(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/normalize_data", response_model=ResponseMessage, tags=["Data Normalization"])
+@router.post("/normalize_data", response_model=ResponseMessage, tags=["Data Normalization"], include_in_schema=False)
 async def normalize_data():
     try:
         result = await normalize_data_to_cars_normalize()

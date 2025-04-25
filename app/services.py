@@ -73,9 +73,9 @@ async def fetch_brands_models_variants_by_source(source: str):
     conn = await get_local_db_connection()
     
     if source == "mudahmy":
-        table_name = "cars_mudahmy"
+        table_name = "cars_mudahmy_1"
     elif source == "carlistmy":
-        table_name = "cars_carlistmy"
+        table_name = "cars_carlistmy_1"
     else:
         await conn.close()
         raise HTTPException(status_code=400, detail="Invalid source")
@@ -170,7 +170,7 @@ async def sync_data_from_remote():
                                                            f'{DB_CARLISTMY_HOST}', f'{DB_CARLISTMY_PASSWORD}')
     logger.info("Koneksi ke CarlistMY berhasil.")
     data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy)
-    await insert_or_update_data_into_local_db(data_carlistmy, 'cars_carlistmy', 'carlistmy')
+    await insert_or_update_data_into_local_db(data_carlistmy, 'cars_carlistmy_1', 'carlistmy')
 
     logger.info("Menyalin data price_history dari CarlistMY...")
     data_price_history_carlistmy = await fetch_price_history_from_remote_db(remote_conn_carlistmy, 'carlistmy')
@@ -181,7 +181,7 @@ async def sync_data_from_remote():
                                                          f'{DB_MUDAHMY_HOST}', f'{DB_MUDAHMY_PASSWORD}')
     logger.info("Koneksi ke MudahMY berhasil.")
     data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy)
-    await insert_or_update_data_into_local_db(data_mudahmy, 'cars_mudahmy', 'mudahmy')
+    await insert_or_update_data_into_local_db(data_mudahmy, 'cars_mudahmy_1', 'mudahmy')
 
     logger.info("Menyalin data price_history dari MudahMY...")
     data_price_history_mudahmy = await fetch_price_history_from_remote_db(remote_conn_mudahmy, 'mudahmy')
@@ -249,7 +249,7 @@ async def get_price_rank_carlistmy(request):
     try:
         query = f"""
             SELECT id, brand, model, variant, price, millage, year
-            FROM cars_carlistmy
+            FROM cars_carlistmy_1
             WHERE brand = $1 AND model = $2 AND variant = $3 AND year = $4
         """
         rows = await conn.fetch(query, brand, model, variant, year)
@@ -378,7 +378,7 @@ async def get_price_rank_mudahmy(request: dict) -> RankPriceResponse:
     try:
         query = """
             SELECT id, brand, model, variant, price, millage, year
-            FROM cars_mudahmy
+            FROM cars_mudahmy_1
             WHERE brand = $1 AND model = $2 AND variant = $3 AND year = $4
         """
         rows = await conn.fetch(query, brand, model, variant, year)
@@ -491,7 +491,7 @@ async def get_brand_distribution_mudahmy() -> List[BrandCount]:
     try:
         query = """
             SELECT brand, COUNT(*) AS total
-            FROM cars_mudahmy
+            FROM cars_mudahmy_1
             WHERE brand IS NOT NULL
             GROUP BY brand
             ORDER BY total DESC
@@ -519,7 +519,7 @@ async def get_brand_distribution_carlistmy() -> List[BrandCount]:
     try:
         query = """
             SELECT brand, COUNT(*) AS total
-            FROM cars_carlistmy
+            FROM cars_carlistmy_1
             WHERE brand IS NOT NULL
             GROUP BY brand
             ORDER BY total DESC
@@ -546,7 +546,7 @@ async def get_top_locations_carlistmy(limit: int = 10) -> List[LocationCount]:
     try:
         query = f"""
             SELECT lokasi, COUNT(*) AS total
-            FROM cars_carlistmy
+            FROM cars_carlistmy_1
             WHERE lokasi IS NOT NULL
             GROUP BY lokasi
             ORDER BY total DESC
@@ -570,7 +570,7 @@ async def get_cars_for_datatables(source: str, start: int, length: int, search: 
     conn = await get_local_db_connection()
 
     try:
-        table_name = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+        table_name = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
 
         # Validasi kolom yang bisa disortir
         sortable_columns = [
@@ -618,10 +618,10 @@ async def get_price_drop_top(source: str, limit: int = 10) -> List[RankCarRespon
     try:
         if source == "mudahmy":
             table_name = "price_history_mudahmy"
-            car_table = "cars_mudahmy"
+            car_table = "cars_mudahmy_1"
         elif source == "carlistmy":
             table_name = "price_history_carlistmy"
-            car_table = "cars_carlistmy"
+            car_table = "cars_carlistmy_1"
         else:
             raise HTTPException(status_code=400, detail="Invalid source")
 
@@ -657,7 +657,7 @@ async def get_price_drop_top(source: str, limit: int = 10) -> List[RankCarRespon
 
 async def get_price_drop_top(source: str, limit: int = 10) -> List[PriceDropItem]:
     table_name = "price_history_mudahmy" if source == "mudahmy" else "price_history_carlistmy"
-    car_table = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+    car_table = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
 
     conn = await get_local_db_connection()
     try:
@@ -736,7 +736,7 @@ async def get_top_price_drops(source: str, limit: int = 10) -> List[PriceDropIte
         await conn.close()
 
 async def get_brand_model_distribution(source: str) -> List[BrandCount]:
-    table_name = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+    table_name = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
     conn = await get_local_db_connection()
     try:
         query = f"""
@@ -758,7 +758,7 @@ async def get_brand_model_distribution(source: str) -> List[BrandCount]:
 
 
 async def get_top_locations_by_brand(source: str, brand: str, model: Optional[str] = None, limit: int = 10) -> List[LocationCount]:
-    table_name = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+    table_name = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
     conn = await get_local_db_connection()
     try:
         conditions = ["UPPER(brand) = UPPER($1)"]
@@ -792,7 +792,7 @@ async def get_top_locations_by_brand(source: str, brand: str, model: Optional[st
         await conn.close()
 
 async def get_available_brands_models(source: str) -> List[dict]:
-    table_name = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+    table_name = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
     conn = await get_local_db_connection()
     try:
         query = f"""
@@ -941,3 +941,101 @@ async def get_all_dropdown_options(
 
     finally:
         await conn.close()
+
+async def normalize_data_to_cars_normalize():
+    import time
+    conn = await get_local_db_connection()
+    try:
+        sources = [
+            ("cars_mudahmy_1", "mudahmy"),
+            ("cars_carlistmy_1", "carlistmy"),
+        ]
+
+        for table_name, source in sources:
+            print(f"\n🚀 Memulai normalisasi data dari {table_name.upper()}...")
+
+            # Mulai waktu
+            start_time = time.time()
+
+            # Ambil data yang semua kolom pentingnya tidak null
+            query = f"""
+                SELECT id FROM {table_name}
+                WHERE listing_url IS NOT NULL
+                  AND brand IS NOT NULL
+                  AND model IS NOT NULL
+                  AND variant IS NOT NULL
+                  AND price IS NOT NULL
+                  AND year IS NOT NULL
+                  AND millage IS NOT NULL
+                  AND brand_norm IS NOT NULL
+                  AND model_group_norm IS NOT NULL
+                  AND model_norm IS NOT NULL
+                  AND variant_norm IS NOT NULL
+                  AND cleaned IS NOT NULL
+            """
+
+            rows = await conn.fetch(query)
+            total_valid = len(rows)
+            print(f"✅ Ditemukan {total_valid} data valid dari {table_name}")
+
+            total_inserted = 0
+            for idx, row in enumerate(rows, 1):
+                try:
+                    await conn.execute("""
+                        INSERT INTO cars_normalize (cars_id, source)
+                        VALUES ($1, $2)
+                        ON CONFLICT (cars_id, source) DO NOTHING
+                    """, row["id"], source)
+                    total_inserted += 1
+
+                    if idx % 500 == 0:
+                        print(f"   ⏳ Progress: {idx}/{total_valid} data diproses...")
+
+                except Exception as e:
+                    print(f"⚠️ Gagal insert ID {row['id']} dari {source}: {e}")
+
+            elapsed = time.time() - start_time
+            print(f"✅ Selesai normalisasi dari {table_name}: {total_inserted} data dimasukkan. ⏱️ Waktu: {elapsed:.2f} detik")
+
+        return {"status": "success", "message": "Normalization complete"}
+
+    finally:
+        await conn.close()
+
+async def get_price_vs_millage_normalized(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model_group: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None
+) -> List[dict]:
+    query = """
+        SELECT
+            COALESCE(m.brand_norm, c.brand_norm) AS brand,
+            COALESCE(m.model_group_norm, c.model_group_norm) AS model_group,
+            COALESCE(m.model_norm, c.model_norm) AS model,
+            COALESCE(m.variant_norm, c.variant_norm) AS variant,
+            COALESCE(m.price, c.price) AS price,
+            COALESCE(m.millage, c.millage) AS millage,
+            COALESCE(m.year, c.year) AS year,
+            n.source
+        FROM cars_normalize n
+        LEFT JOIN cars_mudahmy_1 m ON n.source = 'mudahmy' AND m.id = n.cars_id
+        LEFT JOIN cars_carlistmy_1 c ON n.source = 'carlistmy' AND c.id = n.cars_id
+        WHERE
+            ($1::VARCHAR IS NULL OR n.source = $1) AND
+            ($2::VARCHAR IS NULL OR UPPER(COALESCE(m.brand_norm, c.brand_norm)) = UPPER($2)) AND
+            ($3::VARCHAR IS NULL OR UPPER(COALESCE(m.model_group_norm, c.model_group_norm)) = UPPER($3)) AND
+            ($4::VARCHAR IS NULL OR UPPER(COALESCE(m.model_norm, c.model_norm)) = UPPER($4)) AND
+            ($5::VARCHAR IS NULL OR UPPER(COALESCE(m.variant_norm, c.variant_norm)) = UPPER($5)) AND
+            ($6::INTEGER IS NULL OR COALESCE(m.year, c.year) = $6)
+    """
+
+    conn = await get_local_db_connection()
+    try:
+        rows = await conn.fetch(query, source, brand, model_group, model, variant, year)
+        return [dict(row) for row in rows]
+    finally:
+        await conn.close()
+

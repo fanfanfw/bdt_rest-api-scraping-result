@@ -5,7 +5,7 @@ from app.services import (
     get_price_rank_mudahmy,
     get_top_locations_carlistmy, get_top_price_drops, get_price_drop_top,
     get_top_locations_by_brand, get_brand_model_distribution, get_available_brands_models, get_optimal_price_recommendations,
-    get_price_vs_millage_filtered, get_all_dropdown_options
+    get_price_vs_millage_filtered, get_all_dropdown_options, normalize_data_to_cars_normalize
 )
 from app.models import (
     BrandsModelsVariantsResponse, ResponseMessage, RankPriceResponse,
@@ -17,6 +17,38 @@ from app.database import get_local_db_connection
 router = APIRouter()
 # app.include_router(router)
 # app.include_router(router, prefix="/api")
+
+from app.services import get_price_vs_millage_normalized
+
+@router.get("/analytics/price_vs_millage", tags=["Analytics"])
+async def price_vs_millage(
+    source: Optional[str] = Query(None, description="mudahmy atau carlistmy"),
+    brand: Optional[str] = Query(None),
+    model_group: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    variant: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+):
+    try:
+        data = await get_price_vs_millage_normalized(
+            source=source,
+            brand=brand,
+            model_group=model_group,
+            model=model,
+            variant=variant,
+            year=year
+        )
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/normalize_data", response_model=ResponseMessage, tags=["Data Normalization"])
+async def normalize_data():
+    try:
+        result = await normalize_data_to_cars_normalize()
+        return {"status": result["message"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get(
     "/analytics/{source}/dropdown_options",
@@ -108,7 +140,7 @@ async def price_vs_millage(source: str):
 async def summary_count(source: str = Query(...)):
     conn = await get_local_db_connection()
     try:
-        table = "cars_mudahmy" if source == "mudahmy" else "cars_carlistmy"
+        table = "cars_mudahmy_1" if source == "mudahmy" else "cars_carlistmy_1"
         total = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")
         active = await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE status = 'available'")
         sold = await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE status = 'sold'")

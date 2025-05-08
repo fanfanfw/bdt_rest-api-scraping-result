@@ -442,20 +442,13 @@ async def get_price_vs_mileage_filtered(
     finally:
         await conn.close()
 
-
-import io
-import matplotlib.pyplot as plt
-
 async def generate_scatter_plot(data: list) -> io.BytesIO:
     prices = [item['price'] for item in data]
     mileages = [item['mileage'] for item in data]
-    sources = [item['source'] for item in data]
-
-    colors = ['green' if source == 'mudahmy' else 'blue' for source in sources]
 
     fig, ax = plt.subplots(figsize=(10, 8), dpi=300)
 
-    scatter = ax.scatter(prices, mileages, c=colors, alpha=0.5)
+    scatter = ax.scatter(prices, mileages, c='green', alpha=0.5)
 
     ax.set_title('Scatter Plot: Price vs Mileage', fontsize=16)
     ax.set_xlabel('Price (RM)', fontsize=14)
@@ -463,15 +456,8 @@ async def generate_scatter_plot(data: list) -> io.BytesIO:
 
     ax.grid(True)
 
-    ax.scatter([], [], color='green', label='Mudah')
-    ax.scatter([], [], color='blue', label='Carlist')
-    ax.legend(loc='upper right', fontsize=12)
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
     plt.close(fig)
     return buf
-
-
-

@@ -2,15 +2,16 @@ import logging
 import asyncpg
 import os
 import re
-from datetime import datetime
-from typing import Optional, List
-from fastapi import HTTPException
-from app.database import get_local_db_connection
-from app.models import BrandCount
 import pandas as pd
 import matplotlib.pyplot as plt
 import io
 import numpy as np
+import secrets
+from datetime import datetime
+from typing import Optional, List
+from fastapi import HTTPException
+from app.database import get_local_db_connection
+from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +449,7 @@ async def generate_scatter_plot(data: list) -> io.BytesIO:
 
     fig, ax = plt.subplots(figsize=(10, 8), dpi=300)
 
-    scatter = ax.scatter(prices, mileages, c='green', alpha=0.5)
+    scatter = ax.scatter(prices, mileages, c='red', alpha=0.5)
 
     ax.set_title('Scatter Plot: Price vs Mileage', fontsize=16)
     ax.set_xlabel('Price (RM)', fontsize=14)
@@ -461,3 +462,18 @@ async def generate_scatter_plot(data: list) -> io.BytesIO:
     buf.seek(0)
     plt.close(fig)
     return buf
+
+async def create_api_key(data: APIKeyCreateRequest) -> APIKeyCreateResponse:
+    api_key = f"key_{secrets.token_hex(16)}"
+    conn = await get_local_db_connection()
+
+    try:
+        row = await conn.fetchrow("""
+            INSERT INTO api_clients (client_name, api_key, is_active, request_count, last_reset, rate_limit, purpose)
+            VALUES ($1, $2, TRUE, 0, now(), $3, $4)
+            RETURNING id, client_name, api_key, rate_limit, purpose
+        """, data.client_name, api_key, data.rate_limit, data.purpose)
+
+        return APIKeyCreateResponse(**row)
+    finally:
+        await conn.close()

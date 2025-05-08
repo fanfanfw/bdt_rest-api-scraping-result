@@ -1,15 +1,26 @@
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header, status
 from fastapi.responses import StreamingResponse
-from app.services import (
-    sync_data_from_remote, get_price_vs_mileage_filtered, generate_scatter_plot
-)
+from app.services import sync_data_from_remote, get_price_vs_mileage_filtered, generate_scatter_plot, create_api_key
 from typing import Optional
-from app.models import SyncDataResponse
+from app.models import SyncDataResponse, APIKeyCreateRequest, APIKeyCreateResponse
+import os
 
 router = APIRouter()
+admin_router = APIRouter()
 # app.include_router(router)
 # app.include_router(router, prefix="/api")
+
+ADMIN_KEY = os.getenv("ADMIN_SECRET_KEY", "changeme")
+
+@admin_router.post("/api_keys", response_model=APIKeyCreateResponse, tags=["Admin"])
+async def create_api_key_endpoint(
+    payload: APIKeyCreateRequest,
+    x_admin_key: str = Header(...)
+):
+    if x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin key")
+    return await create_api_key(payload)
 
 @router.get("/analytics/scatter_plot", tags=["Analytics"])
 async def scatter_plot(

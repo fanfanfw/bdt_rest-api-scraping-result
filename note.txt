@@ -1,0 +1,7 @@
+backup
+pg_dump -U postgres -d yourdb -f yourdb_backup.sql
+
+restore
+psql -U postgres -d targetdb -f yourdb_backup.sql
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

@@ -51,6 +51,8 @@ async def price_vs_mileage(
     model: Optional[str] = Query(None),
     variant: Optional[str] = Query(None),
     year: Optional[int] = Query(None),
+    limit: int = Query(100, ge=1, le=1000, description="Jumlah data per halaman"),
+    offset: int = Query(0, ge=0, description="Offset data (untuk pagination)"),
 ):
     try:
         data = await get_price_vs_mileage_filtered(
@@ -58,7 +60,9 @@ async def price_vs_mileage(
             brand=brand,
             model=model,
             variant=variant,
-            year=year
+            year=year,
+            limit=limit,
+            offset=offset
         )
         return data
     except Exception as e:

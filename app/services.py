@@ -73,27 +73,6 @@ async def get_remote_db_connection(db_name, db_user, db_host, db_password):
     )
     return conn
 
-async def fetch_brands_models_variants_by_source(source: str):
-    conn = await get_local_db_connection()
-    
-    if source == "mudahmy":
-        table_name = f"{TB_MUDAHMY}"
-    elif source == "carlistmy":
-        table_name = f"{TB_CARLISTMY}"
-    else:
-        await conn.close()
-        raise HTTPException(status_code=400, detail="Invalid source")
-    
-    query = f"""
-        SELECT DISTINCT brand, model, variant
-        FROM {table_name}
-        WHERE brand IS NOT NULL AND model IS NOT NULL AND variant IS NOT NULL;
-    """
-    rows = await conn.fetch(query)
-    await conn.close()
-    
-    return [{"brand": row["brand"], "model": row["model"], "variant": row["variant"]} for row in rows]
-
 def clean_and_standardize_variant(text):
     if not text or text.strip() == "-":
         return "NO VARIANT"
@@ -368,10 +347,11 @@ async def get_price_vs_mileage_filtered(
     brand: Optional[str] = None,
     model: Optional[str] = None,
     variant: Optional[str] = None,
-    year: Optional[int] = None
+    year: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0
 ) -> List[dict]:
     conn = await get_local_db_connection()
-    
     try:
         if source and source in ["mudahmy", "carlistmy"]:
             tables = [f"cars_{source}"]
@@ -421,9 +401,9 @@ async def get_price_vs_mileage_filtered(
             """
             queries.append(query)
 
-        final_query = " UNION ALL ".join(queries) + " ORDER BY brand, model, variant"
+        final_query = " UNION ALL ".join(queries) + " ORDER BY brand, model, variant LIMIT $%d OFFSET $%d" % (param_index, param_index + 1)
+        values.extend([limit, offset])
 
-        # Eksekusi query
         rows = await conn.fetch(final_query, *values)
         
         return [

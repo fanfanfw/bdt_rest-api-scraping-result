@@ -43,7 +43,6 @@ async def scatter_plot(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/analytics/price_vs_mileage", tags=["Analytics"])
 async def price_vs_mileage(
     source: Optional[str] = Query(None, description="mudahmy atau carlistmy, jika tidak disertakan akan menampilkan data dari kedua sumber"),
@@ -64,11 +63,23 @@ async def price_vs_mileage(
             limit=limit,
             offset=offset
         )
-        return data
+
+        from app.services import get_price_vs_mileage_total_count
+        total = await get_price_vs_mileage_total_count(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year
+        )
+
+        return {
+            "data": data,
+            "meta": {
+                "total": total,
+                "limit": limit,
+                "offset": offset
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/sync_data", response_model=SyncDataResponse, include_in_schema=False)
-async def sync_data():
-    result = await sync_data_from_remote()
-    return result

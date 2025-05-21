@@ -457,3 +457,62 @@ async def create_api_key(data: APIKeyCreateRequest) -> APIKeyCreateResponse:
         return APIKeyCreateResponse(**row)
     finally:
         await conn.close()
+
+async def get_price_vs_mileage_total_count(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+) -> int:
+    conn = await get_local_db_connection()
+    try:
+        if source and source in ["mudahmy", "carlistmy"]:
+            tables = [f"cars_{source}"]
+        else:
+            tables = ["cars_mudahmy", "cars_carlistmy"]
+
+        conditions = []
+        values = []
+        param_index = 1  
+
+        if brand:
+            conditions.append(f"(cs.brand_norm ILIKE ${param_index} OR c.brand ILIKE ${param_index})")
+            values.append(f"%{brand}%")
+            param_index += 1
+        
+        if model:
+            conditions.append(f"(cs.model_norm ILIKE ${param_index} OR c.model ILIKE ${param_index})")
+            values.append(f"%{model}%")
+            param_index += 1
+        
+        if variant:
+            conditions.append(f"(cs.variant_norm ILIKE ${param_index} OR c.variant ILIKE ${param_index})")
+            values.append(f"%{variant}%")
+            param_index += 1
+        
+        if year:
+            conditions.append(f"c.year = ${param_index}")
+            values.append(year)
+            param_index += 1
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        count_queries = []
+        for table in tables:
+            count_query = f"""
+                SELECT COUNT(*) AS total
+                FROM {table} c
+                LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
+                WHERE {where_clause}
+            """
+            count_queries.append(count_query)
+
+        final_count_query = " UNION ALL ".join(count_queries)
+        rows = await conn.fetch(final_count_query, *values)
+
+        total_count = sum(row['total'] for row in rows)
+        return total_count
+
+    finally:
+        await conn.close()

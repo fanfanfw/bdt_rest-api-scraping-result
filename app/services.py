@@ -76,9 +76,10 @@ async def get_remote_db_connection(db_name, db_user, db_host, db_password):
 def clean_and_standardize_brand(text):
     if not text or text.strip() == "-":
         return "UNKNOWN BRAND"
-    text = re.sub(r'[^\w\s]', '', text) 
-    text = re.sub(r'\s+', ' ', text)  
-    return text.strip().upper()
+    text = text.replace("-", " ")
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip().upper() 
 
 def clean_and_standardize_variant(text):
     if not text or text.strip() == "-":

@@ -73,6 +73,13 @@ async def get_remote_db_connection(db_name, db_user, db_host, db_password):
     )
     return conn
 
+def clean_and_standardize_brand(text):
+    if not text or text.strip() == "-":
+        return "UNKNOWN BRAND"
+    text = re.sub(r'[^\w\s]', '', text) 
+    text = re.sub(r'\s+', ' ', text)  
+    return text.strip().upper()
+
 def clean_and_standardize_variant(text):
     if not text or text.strip() == "-":
         return "NO VARIANT"
@@ -94,7 +101,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
         for row in tqdm(data, desc=f"Inserting {source}"):
             id_ = row[0]
             listing_url = row[1]
-            brand = row[2].upper() if row[2] else None
+            brand = clean_and_standardize_brand(row[2]) if row[2] else None 
             model = clean_and_standardize_variant(row[3])
             variant = clean_and_standardize_variant(row[4])
             informasi_iklan = row[5]

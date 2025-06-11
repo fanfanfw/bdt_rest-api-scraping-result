@@ -489,7 +489,7 @@ async def get_price_vs_mileage_filtered(
             param_index += 1
         
         if variant:
-            conditions.append(f"(cs.variant_norm ILIKE ${param_index} OR c.variant ILIKE ${param_index})")
+            conditions.append(f"c.variant ILIKE ${param_index}")
             values.append(f"%{variant}%")
             param_index += 1
         
@@ -500,44 +500,50 @@ async def get_price_vs_mileage_filtered(
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        queries = []
+        data = []
         for table in tables:
+            source_name = table.replace("cars_", "")
+            limit_param = param_index
+            offset_param = param_index + 1
             query = f"""
                 SELECT 
-                    COALESCE(cs.brand_norm, c.brand) AS brand,
-                    COALESCE(cs.model_norm, c.model) AS model,
-                    COALESCE(cs.variant_norm, c.variant) AS variant,
+                    c.brand,
+                    c.model,
+                    c.variant,
                     c.price,
                     c.mileage,
                     c.year,
-                    '{table.replace('cars_', '')}' AS source,
-                    c.informasi_iklan AS ads_information
+                    '{source_name}' as source,
+                    c.last_scraped_at as scraped_at,
+                    c.informasi_iklan_date as ads_date
                 FROM {table} c
                 LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
                 WHERE {where_clause}
+                ORDER BY c.price DESC
+                LIMIT ${limit_param} OFFSET ${offset_param}
             """
-            queries.append(query)
+            
+            query_values = list(values)  # Buat salinan values untuk query ini
+            query_values.extend([limit, offset])
+            result = await conn.fetch(query, *query_values)
+            for row in result:
+                data.append({
+                    "brand": row["brand"],
+                    "model": row["model"],
+                    "variant": row["variant"],
+                    "price": row["price"],
+                    "mileage": row["mileage"],
+                    "year": row["year"],
+                    "source": row["source"],
+                    "scraped_at": row["scraped_at"].strftime("%Y-%m-%d %H:%M:%S") if row["scraped_at"] else None,
+                    "ads_date": row["ads_date"].strftime("%Y-%m-%d") if row["ads_date"] else None
+                })
 
-        final_query = " UNION ALL ".join(queries) + " ORDER BY brand, model, variant LIMIT $%d OFFSET $%d" % (param_index, param_index + 1)
-        values.extend([limit, offset])
+        return data
 
-        rows = await conn.fetch(final_query, *values)
-        
-        return [
-            {
-                "brand": row["brand"],
-                "model": row["model"],
-                "variant": row["variant"],
-                "price": row["price"],
-                "mileage": row["mileage"],
-                "year": row["year"],
-                "source": row["source"],
-                "ads_information": row["ads_information"]
-            }
-            for row in rows
-        ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        logger.error(f"Error in get_price_vs_mileage_filtered: {str(e)}")
+        raise
     finally:
         await conn.close()
 

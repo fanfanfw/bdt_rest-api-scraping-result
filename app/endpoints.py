@@ -52,6 +52,8 @@ async def price_vs_mileage(
     year: Optional[int] = Query(None),
     limit: int = Query(100, ge=1, le=1000, description="Jumlah data per halaman"),
     offset: int = Query(0, ge=0, description="Offset data (untuk pagination)"),
+    sort_by: Optional[str] = Query("scraped_at", description="Kolom untuk pengurutan. Options: scraped_at, ads_date"),
+    sort_direction: Optional[str] = Query("desc", description="Arah pengurutan. Options: asc, desc")
 ):
     try:
         data = await get_price_vs_mileage_filtered(
@@ -61,7 +63,9 @@ async def price_vs_mileage(
             variant=variant,
             year=year,
             limit=limit,
-            offset=offset
+            offset=offset,
+            sort_by=sort_by,
+            sort_direction=sort_direction
         )
 
         from app.services import get_price_vs_mileage_total_count

@@ -465,7 +465,9 @@ async def get_price_vs_mileage_filtered(
     variant: Optional[str] = None,
     year: Optional[int] = None,
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    sort_by: str = "scraped_at",
+    sort_direction: str = "desc"
 ) -> List[dict]:
     conn = await get_local_db_connection()
     try:
@@ -500,13 +502,20 @@ async def get_price_vs_mileage_filtered(
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
+        # Validate sort parameters
+        valid_sort_columns = {"scraped_at": "c.last_scraped_at", "ads_date": "c.informasi_iklan_date"}
+        sort_column = valid_sort_columns.get(sort_by, "c.last_scraped_at")
+        sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
+
         data = []
         for table in tables:
             source_name = table.replace("cars_", "")
             limit_param = param_index
             offset_param = param_index + 1
+            
             query = f"""
                 SELECT 
+                    c.id,
                     c.brand,
                     c.model,
                     c.variant,
@@ -519,7 +528,7 @@ async def get_price_vs_mileage_filtered(
                 FROM {table} c
                 LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
                 WHERE {where_clause}
-                ORDER BY c.price DESC
+                ORDER BY {sort_column} {sort_order}, c.id DESC
                 LIMIT ${limit_param} OFFSET ${offset_param}
             """
             

@@ -15,3 +15,6 @@ pencocokan_log.log
 skipped_carlistmy.csv
 skipped_mudahmy.csv
 dd.py
+
+convert_date_carlistmy/
+convert_date_mudahmy/

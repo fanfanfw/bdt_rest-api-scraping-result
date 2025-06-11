@@ -7,15 +7,15 @@ import matplotlib.pyplot as plt
 import io
 import numpy as np
 import secrets
-from datetime import datetime
-from typing import Optional, List
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple
 from fastapi import HTTPException
 from app.database import get_local_db_connection
 from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
 
 logger = logging.getLogger(__name__)
 
-DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
+DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy_old")
 DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USERNAME", "fanfan")
 DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTNY_PASSWORD", "cenanun")
 DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")
@@ -59,8 +59,33 @@ def parse_datetime(value):
         return value
     return None
 
-async def fetch_data_from_remote_db(conn):
-    query = "SELECT * FROM public.cars"
+async def fetch_data_from_remote_db(conn, source=None):
+    """
+    Mengambil data dari database remote berdasarkan sumber.
+    """
+    if source == 'carlistmy':
+        query = """
+            SELECT 
+                id, listing_url, brand, model, variant, informasi_iklan, 
+                lokasi, price, year, millage as mileage, transmission, 
+                seat_capacity, gambar, last_scraped_at, version, created_at, 
+                sold_at, status
+            FROM public.cars
+            WHERE last_scraped_at >= NOW() - INTERVAL '30 days'
+        """
+    elif source == 'mudahmy':
+        query = """
+            SELECT 
+                id, listing_url, brand, model, variant, informasi_iklan, 
+                lokasi, price, year, millage as mileage, transmission, 
+                seat_capacity, gambar, last_scraped_at, version, created_at, 
+                sold_at, status
+            FROM public.cars
+            WHERE last_scraped_at >= NOW() - INTERVAL '30 days'
+        """
+    else:
+        raise HTTPException(status_code=400, detail="Invalid source specified")
+        
     rows = await conn.fetch(query)  
     return rows
 
@@ -162,24 +187,55 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                 if norm_result:
                     cars_standard_id = norm_result['id']
 
+            raw1 = None
+            raw2 = None
+            iklan_date = None
+            
+            if source == 'mudahmy':
+                # Skip if URGENT untuk mudahmy
+                if informasi_iklan and informasi_iklan.strip().upper() == "URGENT":
+                    skipped_count += 1
+                    skipped_records.append({
+                        "source": source,
+                        "id": id_,
+                        "reason": "URGENT listing"
+                    })
+                    continue
+                    
+                # Convert informasi_iklan untuk mudahmy
+                raw1, raw2, iklan_date = convert_informasi_iklan(informasi_iklan, last_scraped_at)
+            elif source == 'carlistmy':
+                # Convert informasi_iklan untuk carlistmy
+                raw1, raw2, iklan_date = convert_informasi_iklan_carlistmy(informasi_iklan)
+            elif source == 'carlistmy':
+                # Convert informasi_iklan untuk carlistmy
+                raw1, raw2, iklan_date = convert_informasi_iklan_carlistmy(informasi_iklan)
+
             # Insert/Update
-            await conn.execute(f"""
-                INSERT INTO {table_name} (
-                    id, listing_url, brand, model, variant, informasi_iklan,
-                    lokasi, price, year, mileage, transmission, seat_capacity,
-                    gambar, last_scraped_at, version, created_at, sold_at, status,
-                    cars_standard_id, source
-                )
-                VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-                )
-                ON CONFLICT (id) DO UPDATE SET
+            # Query berbeda untuk mudahmy dan carlistmy
+            if source == 'mudahmy':
+                await conn.execute(f"""
+                    INSERT INTO {table_name} (
+                        id, listing_url, brand, model, variant, informasi_iklan,
+                        informasi_iklan_raw1, informasi_iklan_raw2, informasi_iklan_date,
+                        lokasi, price, year, mileage, transmission, seat_capacity,
+                        gambar, last_scraped_at, version, created_at, sold_at, status,
+                        cars_standard_id, source
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                        $21, $22, $23
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
                     listing_url = EXCLUDED.listing_url,
                     brand = EXCLUDED.brand,
                     model = EXCLUDED.model,
                     variant = EXCLUDED.variant,
                     informasi_iklan = EXCLUDED.informasi_iklan,
+                    informasi_iklan_raw1 = EXCLUDED.informasi_iklan_raw1,
+                    informasi_iklan_raw2 = EXCLUDED.informasi_iklan_raw2,
+                    informasi_iklan_date = EXCLUDED.informasi_iklan_date,
                     lokasi = EXCLUDED.lokasi,
                     price = EXCLUDED.price,
                     year = EXCLUDED.year,
@@ -196,6 +252,50 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     source = EXCLUDED.source
             """,
             id_, listing_url, brand, model, variant, informasi_iklan,
+            raw1, raw2, iklan_date,
+            lokasi, price_int, year_int, mileage_int, transmission, seat_capacity,
+            gambar, last_scraped_at, version, created_at, sold_at, status,
+            cars_standard_id, source)
+            elif source == 'carlistmy':
+                await conn.execute(f"""
+                    INSERT INTO {table_name} (
+                        id, listing_url, brand, model, variant, informasi_iklan,
+                        informasi_iklan_raw1, informasi_iklan_raw2, informasi_iklan_date,
+                        lokasi, price, year, mileage, transmission, seat_capacity,
+                        gambar, last_scraped_at, version, created_at, sold_at, status,
+                        cars_standard_id, source
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                        $21, $22, $23
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                    listing_url = EXCLUDED.listing_url,
+                    brand = EXCLUDED.brand,
+                    model = EXCLUDED.model,
+                    variant = EXCLUDED.variant,
+                    informasi_iklan = EXCLUDED.informasi_iklan,
+                    informasi_iklan_raw1 = EXCLUDED.informasi_iklan_raw1,
+                    informasi_iklan_raw2 = EXCLUDED.informasi_iklan_raw2,
+                    informasi_iklan_date = EXCLUDED.informasi_iklan_date,
+                    lokasi = EXCLUDED.lokasi,
+                    price = EXCLUDED.price,
+                    year = EXCLUDED.year,
+                    mileage = EXCLUDED.mileage,
+                    transmission = EXCLUDED.transmission,
+                    seat_capacity = EXCLUDED.seat_capacity,
+                    gambar = EXCLUDED.gambar,
+                    last_scraped_at = EXCLUDED.last_scraped_at,
+                    version = EXCLUDED.version,
+                    created_at = EXCLUDED.created_at,
+                    sold_at = EXCLUDED.sold_at,
+                    status = EXCLUDED.status,
+                    cars_standard_id = COALESCE(EXCLUDED.cars_standard_id, {table_name}.cars_standard_id),
+                    source = EXCLUDED.source
+            """,
+            id_, listing_url, brand, model, variant, informasi_iklan,
+            raw1, raw2, iklan_date,
             lokasi, price_int, year_int, mileage_int, transmission, seat_capacity,
             gambar, last_scraped_at, version, created_at, sold_at, status,
             cars_standard_id, source)
@@ -223,7 +323,7 @@ async def sync_data_from_remote():
     remote_conn_carlistmy = await get_remote_db_connection(DB_CARLISTMY, DB_CARLISTMY_USERNAME, DB_CARLISTMY_HOST, DB_CARLISTMY_PASSWORD)
     logger.info("[CarlistMY] Berhasil terkoneksi.")
     
-    data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy)
+    data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy, 'carlistmy')
     logger.info(f"[CarlistMY] Total data yang diambil: {len(data_carlistmy)}")
 
     inserted_carlistmy, skipped_carlistmy = await insert_or_update_data_into_local_db(data_carlistmy, f'{TB_CARLISTMY}', 'carlistmy')
@@ -245,7 +345,7 @@ async def sync_data_from_remote():
     remote_conn_mudahmy = await get_remote_db_connection(DB_MUDAHMY, DB_MUDAHMY_USERNAME, DB_MUDAHMY_HOST, DB_MUDAHMY_PASSWORD)
     logger.info("[MudahMY] Berhasil terkoneksi.")
     
-    data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy)
+    data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy, 'mudahmy')
     logger.info(f"[MudahMY] Total data yang diambil: {len(data_mudahmy)}")
 
     inserted_mudahmy, skipped_mudahmy = await insert_or_update_data_into_local_db(data_mudahmy, f'{TB_MUDAHMY}', 'mudahmy')
@@ -271,9 +371,17 @@ async def fetch_price_history_from_remote_db(conn, source):
     Mengambil data price history berdasarkan sumbernya, apakah carlistmy atau mudahmy.
     """
     if source == 'carlistmy':
-        query = "SELECT car_id, old_price, new_price, changed_at FROM public.price_history_combined"
+        query = """
+            SELECT car_id, old_price, new_price, changed_at 
+            FROM public.price_history_combined
+            WHERE changed_at >= NOW() - INTERVAL '30 days'
+        """
     elif source == 'mudahmy':
-        query = "SELECT car_id, old_price, new_price, changed_at FROM public.price_history_combined"
+        query = """
+            SELECT car_id, old_price, new_price, changed_at 
+            FROM public.price_history_combined
+            WHERE changed_at >= NOW() - INTERVAL '30 days'
+        """
     else:
         raise HTTPException(status_code=400, detail="Invalid source for price history.")
 
@@ -402,7 +510,8 @@ async def get_price_vs_mileage_filtered(
                     c.price,
                     c.mileage,
                     c.year,
-                    '{table.replace('cars_', '')}' AS source
+                    '{table.replace('cars_', '')}' AS source,
+                    c.informasi_iklan AS ads_information
                 FROM {table} c
                 LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
                 WHERE {where_clause}
@@ -422,7 +531,8 @@ async def get_price_vs_mileage_filtered(
                 "price": row["price"],
                 "mileage": row["mileage"],
                 "year": row["year"],
-                "source": row["source"]
+                "source": row["source"],
+                "ads_information": row["ads_information"]
             }
             for row in rows
         ]
@@ -524,3 +634,130 @@ async def get_price_vs_mileage_total_count(
 
     finally:
         await conn.close()
+
+def convert_informasi_iklan(informasi_iklan: str, last_scraped_at: datetime) -> tuple:
+    """
+    Convert informasi_iklan string into raw1, raw2, and date components for mudahmy data.
+    
+    Args:
+        informasi_iklan: Original informasi_iklan string
+        last_scraped_at: Timestamp when the data was scraped
+    
+    Returns:
+        Tuple of (raw1, raw2, iklan_date)
+    """
+    if not informasi_iklan:
+        return None, None, None
+
+    # Split based on "posted"
+    parts = informasi_iklan.split("posted")
+    
+    if len(parts) == 2:
+        raw1 = parts[0].strip()
+        raw2 = parts[1].strip()
+    else:
+        raw1 = ""
+        raw2 = informasi_iklan.strip()
+    
+    # Convert the date part
+    month_to_num = {
+        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+        'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+    }
+
+    iklan_date = None
+    
+    # Handle "X days ago"
+    if 'days ago' in raw2:
+        try:
+            days_ago = int(raw2.split()[0])
+            iklan_date = last_scraped_at - timedelta(days=days_ago)
+        except (ValueError, IndexError):
+            pass
+
+    # Handle "X day ago"
+    elif 'day ago' in raw2:
+        try:
+            days_ago = int(raw2.split()[0])
+            iklan_date = last_scraped_at - timedelta(days=days_ago)
+        except (ValueError, IndexError):
+            pass
+
+    # Handle "X hours ago"
+    elif 'hours ago' in raw2 or 'hour ago' in raw2:
+        try:
+            hours_ago = int(raw2.split()[0])
+            iklan_date = last_scraped_at - timedelta(hours=hours_ago)
+        except (ValueError, IndexError):
+            pass
+
+    # Handle "X mins ago"
+    elif 'mins ago' in raw2 or 'min ago' in raw2:
+        try:
+            mins_ago = int(raw2.split()[0])
+            iklan_date = last_scraped_at - timedelta(minutes=mins_ago)
+        except (ValueError, IndexError):
+            pass
+
+    # Handle "DD Mon YYYY" or "DD Mon"
+    else:
+        parts = raw2.split()
+        if len(parts) >= 2:
+            try:
+                day = int(parts[0])
+                month = month_to_num.get(parts[1][:3].capitalize())
+                year = int(parts[2]) if len(parts) > 2 else last_scraped_at.year
+
+                if month and 1 <= day <= 31:
+                    date_str = f"{year}-{month}-{day:02d}"
+                    iklan_date = datetime.strptime(date_str, '%Y-%m-%d')
+            except (ValueError, IndexError):
+                pass
+
+    return raw1, raw2, iklan_date
+
+def convert_informasi_iklan_carlistmy(informasi_iklan: str) -> tuple:
+    """
+    Convert informasi_iklan string into raw1, raw2, and date components for carlistmy data.
+    Format expected: "Updated on: April 02, 2025"
+    
+    Args:
+        informasi_iklan: Original informasi_iklan string
+    
+    Returns:
+        Tuple of (raw1, raw2, iklan_date)
+    """
+    if not informasi_iklan:
+        return None, None, None
+
+    month_to_num = {
+        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+        'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+    }
+
+    raw1 = None
+    raw2 = None
+    iklan_date = None
+
+    if informasi_iklan.startswith("Updated on: "):
+        raw1 = "Updated on: "
+        raw2 = informasi_iklan[len(raw1):]
+    else:
+        raw1 = ""
+        raw2 = informasi_iklan
+
+    try:
+        parts = raw2.split()
+        if len(parts) == 3:
+            month_str, day_str, year = parts
+            day_str = day_str.replace(',', '')
+            
+            month = month_to_num.get(month_str[:3], None)
+            
+            if month and day_str.isdigit() and year.isdigit():
+                date_str = f"{year}-{month}-{int(day_str):02d}"
+                iklan_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except (ValueError, IndexError):
+        pass
+
+    return raw1, raw2, iklan_date

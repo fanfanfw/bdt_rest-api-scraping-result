@@ -15,7 +15,7 @@ from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
 
 logger = logging.getLogger(__name__)
 
-DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy_old")
+DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
 DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USERNAME", "fanfan")
 DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTNY_PASSWORD", "cenanun")
 DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")

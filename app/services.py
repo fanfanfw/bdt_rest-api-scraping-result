@@ -502,18 +502,11 @@ async def get_price_vs_mileage_filtered(
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        # Validate sort parameters
-        valid_sort_columns = {"scraped_at": "c.last_scraped_at", "ads_date": "c.informasi_iklan_date"}
-        sort_column = valid_sort_columns.get(sort_by, "c.last_scraped_at")
-        sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
-
-        data = []
+        # Create individual queries for each table
+        select_queries = []
         for table in tables:
             source_name = table.replace("cars_", "")
-            limit_param = param_index
-            offset_param = param_index + 1
-            
-            query = f"""
+            select_queries.append(f"""
                 SELECT 
                     c.id,
                     c.brand,
@@ -524,29 +517,55 @@ async def get_price_vs_mileage_filtered(
                     c.year,
                     '{source_name}' as source,
                     c.last_scraped_at as scraped_at,
-                    c.informasi_iklan_date as ads_date
+                    c.informasi_iklan_date as ads_date,
+                    COALESCE(c.informasi_iklan_date, c.last_scraped_at) as sort_date
                 FROM {table} c
                 LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
                 WHERE {where_clause}
-                ORDER BY {sort_column} {sort_order}, c.id DESC
-                LIMIT ${limit_param} OFFSET ${offset_param}
-            """
-            
-            query_values = list(values)  # Buat salinan values untuk query ini
-            query_values.extend([limit, offset])
-            result = await conn.fetch(query, *query_values)
-            for row in result:
-                data.append({
-                    "brand": row["brand"],
-                    "model": row["model"],
-                    "variant": row["variant"],
-                    "price": row["price"],
-                    "mileage": row["mileage"],
-                    "year": row["year"],
-                    "source": row["source"],
-                    "scraped_at": row["scraped_at"].strftime("%Y-%m-%d %H:%M:%S") if row["scraped_at"] else None,
-                    "ads_date": row["ads_date"].strftime("%Y-%m-%d") if row["ads_date"] else None
-                })
+            """)
+
+        # Combine queries with UNION ALL and add global sorting
+        limit_param = param_index
+        offset_param = param_index + 1
+        
+        sort_column = "sort_date" if sort_by == "ads_date" else "scraped_at"
+        sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
+        
+        final_query = f"""
+            WITH combined_data AS (
+                {" UNION ALL ".join(select_queries)}
+            )
+            SELECT 
+                brand,
+                model,
+                variant,
+                price,
+                mileage,
+                year,
+                source,
+                scraped_at,
+                ads_date
+            FROM combined_data
+            ORDER BY {sort_column} {sort_order} NULLS LAST, id DESC
+            LIMIT ${limit_param} OFFSET ${offset_param}
+        """
+
+        values.extend([limit, offset])
+        result = await conn.fetch(final_query, *values)
+
+        data = []
+        for row in result:
+            data.append({
+                "brand": row["brand"],
+                "model": row["model"],
+                "variant": row["variant"],
+                "price": row["price"],
+                "mileage": row["mileage"],
+                "year": row["year"],
+                "source": row["source"],
+                "scraped_at": row["scraped_at"].strftime("%Y-%m-%d %H:%M:%S") if row["scraped_at"] else None,
+                "ads_date": row["ads_date"].strftime("%Y-%m-%d") if row["ads_date"] else None
+            })
 
         return data
 

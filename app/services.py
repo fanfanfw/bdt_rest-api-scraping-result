@@ -15,9 +15,9 @@ from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
 
 logger = logging.getLogger(__name__)
 
-DB_CARLISTMY = os.getenv("DB_CARLISTNY", "scrap_carlistmy")
-DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTNY_USERNAME", "fanfan")
-DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTNY_PASSWORD", "cenanun")
+DB_CARLISTMY = os.getenv("DB_CARLISTMY", "scrap_carlistmy")
+DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTMY_USERNAME", "fanfan")
+DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTMY_PASSWORD", "cenanun")
 DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")
 DB_MUDAHMY = os.getenv("DB_MUDAHMY", "scrap_mudahmy")
 DB_MUDAHMY_USERNAME = os.getenv("DB_MUDAHMY_USERNAME", "fanfan")
@@ -779,6 +779,7 @@ def convert_informasi_iklan(informasi_iklan: str, last_scraped_at: datetime) -> 
 def convert_informasi_iklan_carlistmy(informasi_iklan: str, last_scraped_at: datetime) -> tuple:
     """
     Convert informasi_iklan string into raw1, raw2, and date components for carlistmy data.
+    Format expected: "Updated on: April 02, 2025"
     
     Args:
         informasi_iklan: Original informasi_iklan string
@@ -788,72 +789,40 @@ def convert_informasi_iklan_carlistmy(informasi_iklan: str, last_scraped_at: dat
         Tuple of (raw1, raw2, iklan_date)
     """
     if not informasi_iklan:
-        return "", "", None
+        return None, None, None
 
-    raw1 = informasi_iklan
-    raw2 = informasi_iklan.strip()
-    iklan_date = None
+    # Dictionary untuk konversi bulan ke angka
+    month_to_num = {
+        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+        'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12',
+        'January': '01', 'February': '02', 'March': '03', 'April': '04', 'May': '05', 'June': '06',
+        'July': '07', 'August': '08', 'September': '09', 'October': '10', 'November': '11', 'December': '12'
+    }
 
-    if raw2.lower().startswith('posted on '):
-        raw2 = raw2[9:].strip()
-
-    # Handle "X days ago"
-    if 'days ago' in raw2.lower():
-        try:
-            days_str = [s for s in raw2.split() if s.isdigit()][0]
-            days_ago = int(days_str)
-            iklan_date = last_scraped_at - timedelta(days=days_ago)
-        except (ValueError, IndexError):
-            pass
-
-    # Handle "X day ago"
-    elif 'day ago' in raw2.lower():
-        try:
-            days_str = [s for s in raw2.split() if s.isdigit()][0]
-            days_ago = int(days_str)
-            iklan_date = last_scraped_at - timedelta(days=days_ago)
-        except (ValueError, IndexError):
-            pass
-
-    # Handle "X hours ago" or "hour ago"
-    elif 'hours ago' in raw2.lower() or 'hour ago' in raw2.lower():
-        try:
-            hours_str = [s for s in raw2.split() if s.isdigit()][0]
-            hours_ago = int(hours_str)
-            iklan_date = last_scraped_at - timedelta(hours=hours_ago)
-        except (ValueError, IndexError):
-            pass
-
-    # Handle "X mins ago" or "min ago"
-    elif 'mins ago' in raw2.lower() or 'min ago' in raw2.lower():
-        try:
-            mins_str = [s for s in raw2.split() if s.isdigit()][0]
-            mins_ago = int(mins_str)
-            iklan_date = last_scraped_at - timedelta(minutes=mins_ago)
-        except (ValueError, IndexError):
-            pass
-
-    # Try parsing DD/MM/YYYY format
+    if informasi_iklan.startswith("Updated on: "):
+        raw1 = "Updated on: "
+        raw2 = informasi_iklan[len(raw1):] 
     else:
-        patterns = [
-            r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})',
-            r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, raw2)
-            if match:
-                try:
-                    if len(match.groups()[0]) == 4:  # YYYY-MM-DD format
-                        year, month, day = map(int, match.groups())
-                    else:  # DD-MM-YYYY format
-                        day, month, year = map(int, match.groups())
-                        
-                    if 1 <= day <= 31 and 1 <= month <= 12:
-                        date_str = f"{year}-{month:02d}-{day:02d}"
-                        iklan_date = datetime.strptime(date_str, '%Y-%m-%d')
-                        break
-                except ValueError:
-                    continue
+        raw1 = None
+        raw2 = informasi_iklan
+
+    iklan_date = None
+    try:
+        parts = raw2.split()
+        if len(parts) == 3:
+            month_str = parts[0]
+            day_str = parts[1].replace(',', '')  
+            year = parts[2]
+
+            month = month_to_num.get(month_str)
+
+            if month and day_str.isdigit() and year.isdigit():
+                day = int(day_str)
+                year = int(year)
+                if 1 <= day <= 31: 
+                    date_str = f"{year}-{month}-{day:02d}"
+                    iklan_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except (ValueError, IndexError):
+        pass  # Jika ada error, biarkan iklan_date = None
 
     return raw1, raw2, iklan_date

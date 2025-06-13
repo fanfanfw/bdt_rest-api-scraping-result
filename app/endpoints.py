@@ -1,7 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Header, status
 from fastapi.responses import StreamingResponse
-from app.services import sync_data_from_remote, get_price_vs_mileage_filtered, generate_scatter_plot, create_api_key
+from app.services import sync_data_from_remote, get_price_vs_mileage_filtered, generate_scatter_plot, create_api_key, clear_rate_limit
 from typing import Optional
 from app.models import SyncDataResponse, APIKeyCreateRequest, APIKeyCreateResponse
 import os
@@ -21,6 +21,20 @@ async def create_api_key_endpoint(
     if x_admin_key != ADMIN_KEY:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin key")
     return await create_api_key(payload)
+
+@admin_router.post("/rate-limit/clear/{api_key}", tags=["Admin"])
+async def clear_rate_limit_endpoint(
+    api_key: str,
+    x_admin_key: str = Header(...)
+):
+    """
+    Clear rate limit for a specific API key.
+    Only administrators can perform this action.
+    """
+    if x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin key")
+    
+    return await clear_rate_limit(api_key)
 
 @router.get("/analytics/scatter_plot", tags=["Analytics"])
 async def scatter_plot(

@@ -826,3 +826,37 @@ def convert_informasi_iklan_carlistmy(informasi_iklan: str, last_scraped_at: dat
         pass  # Jika ada error, biarkan iklan_date = None
 
     return raw1, raw2, iklan_date
+
+async def clear_rate_limit(api_key: str) -> dict:
+    """
+    Reset the request count and last reset time for a specific API key.
+    """
+    conn = await get_local_db_connection()
+    try:
+        # First check if the API key exists and is active
+        row = await conn.fetchrow("""
+            SELECT id, client_name
+            FROM api_clients
+            WHERE api_key = $1 AND is_active = TRUE
+        """, api_key)
+
+        if not row:
+            raise HTTPException(status_code=404, detail="API key not found or inactive")
+
+        # Reset the rate limit counters
+        now = datetime.utcnow()
+        await conn.execute("""
+            UPDATE api_clients
+            SET request_count = 0, last_reset = $1
+            WHERE id = $2
+        """, now, row['id'])
+
+        return {
+            "status": "success",
+            "message": f"Rate limit cleared for client: {row['client_name']}",
+            "client_name": row['client_name'],
+            "reset_time": now
+        }
+
+    finally:
+        await conn.close()

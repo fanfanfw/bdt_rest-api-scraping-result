@@ -75,7 +75,7 @@ async def fetch_data_from_remote_db(conn, source=None):
     elif source == 'mudahmy':
         query = """
             SELECT 
-                id, listing_url, condition, brand, model, variant,
+                id, listing_url, condition, brand, model_group, model, variant,
                 information_ads, location, price, year, mileage,
                 transmission, seat_capacity, images, last_scraped_at,
                 version, created_at, sold_at, status, last_status_check,
@@ -85,7 +85,7 @@ async def fetch_data_from_remote_db(conn, source=None):
         """
     else:
         raise HTTPException(status_code=400, detail="Invalid source specified")
-        
+    
     rows = await conn.fetch(query)  
     return rows
 
@@ -156,7 +156,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             seat_capacity = row['seat_capacity']
 
             # Khusus carlistmy
-            model_group = row.get('model_group') if source == 'carlistmy' else None
+            model_group = row.get('model_group')
             
             # Konversi images dari list ke string JSON atau string biasa (dipisahkan koma)
             images = row['images']
@@ -221,13 +221,13 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
 
             cars_standard_id = existing_standard_id
             if not existing_standard_id:
-                # Query normalisasi baru: cek brand, model_group, model, variant secara berurutan
+                # Query normalisasi baru: gunakan TRIM agar spasi di awal/akhir diabaikan
                 norm_query = """
                     SELECT id FROM cars_standard
-                    WHERE brand_norm = $1
-                      AND ($2 IN (model_group_norm, model_group_raw))
-                      AND ($3 IN (model_norm, model_raw))
-                      AND ($4 IN (variant_norm, variant_raw, variant_raw2))
+                    WHERE TRIM(brand_norm) = TRIM($1)
+                      AND (TRIM($2) IN (TRIM(model_group_norm), TRIM(model_group_raw)))
+                      AND (TRIM($3) IN (TRIM(model_norm), TRIM(model_raw)))
+                      AND (TRIM($4) IN (TRIM(variant_norm), TRIM(variant_raw), TRIM(variant_raw2)))
                     LIMIT 1
                 """
                 norm_result = await conn.fetchrow(norm_query, brand, model_group, model, variant)
@@ -238,7 +238,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             if source == 'mudahmy':
                 query = f"""
                     INSERT INTO {table_name} (
-                        id, listing_url, condition, brand, model, variant, information_ads,
+                        id, listing_url, condition, brand, model_group, model, variant, information_ads,
                         location, price, year, mileage, transmission, seat_capacity,
                         images, last_scraped_at, version, created_at, sold_at, status,
                         cars_standard_id, source, information_ads_date
@@ -246,12 +246,13 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                         $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22
+                        $20, $21, $22, $23
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         listing_url = EXCLUDED.listing_url,
                         condition = EXCLUDED.condition,
                         brand = EXCLUDED.brand,
+                        model_group = EXCLUDED.model_group,
                         model = EXCLUDED.model,
                         variant = EXCLUDED.variant,
                         information_ads = EXCLUDED.information_ads,
@@ -272,7 +273,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                         information_ads_date = EXCLUDED.information_ads_date
                 """
                 params = [
-                    id_, listing_url, condition, brand, model, variant, information_ads,
+                    id_, listing_url, condition, brand, model_group, model, variant, information_ads,
                     location, price_int, year_int, mileage_int, transmission, seat_capacity,
                     images, last_scraped_at, version, created_at, sold_at, status,
                     cars_standard_id, source, information_ads_date

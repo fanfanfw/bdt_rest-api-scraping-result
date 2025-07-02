@@ -63,22 +63,25 @@ async def fetch_data_from_remote_db(conn, source=None):
     if source == 'carlistmy':
         query = """
             SELECT 
-                id, listing_url, brand, model_group, model, variant,
+                id, listing_url, condition, brand, model_group, model, variant,
                 information_ads, location, price, year, mileage,
-                transmission, seat_capacity, images, last_scraped_at,
-                version, created_at, sold_at, status, last_status_check,
-                information_ads_date
+                transmission, seat_capacity, engine_cc, fuel_type,
+                images, last_scraped_at, version, created_at, sold_at, 
+                status, last_status_check, information_ads_date, ads_tag,
+                is_deleted
             FROM public.cars_scrap_carlistmy
+            ORDER BY information_ads_date DESC, last_scraped_at DESC
         """
     elif source == 'mudahmy':
         query = """
             SELECT 
-                id, listing_url, brand, model, variant,
+                id, listing_url, condition, brand, model, variant,
                 information_ads, location, price, year, mileage,
                 transmission, seat_capacity, images, last_scraped_at,
                 version, created_at, sold_at, status, last_status_check,
                 information_ads_date
             FROM public.cars_scrap_mudahmy
+            ORDER BY information_ads_date DESC, last_scraped_at DESC
         """
     else:
         raise HTTPException(status_code=400, detail="Invalid source specified")
@@ -126,6 +129,7 @@ def clean_and_standardize_variant(text):
 
 async def insert_or_update_data_into_local_db(data, table_name, source):
     from tqdm import tqdm
+    import json
 
     conn = await get_local_db_connection()
     skipped_records = []
@@ -136,13 +140,13 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
         print(f"\n🚀 Memulai proses insert/update untuk {source.upper()}...")
 
         for row in tqdm(data, desc=f"Inserting {source}"):
-
-            # Ambil semua kolom yang relevan
+            # Ambil semua kolom yang relevan (TANPA regex/cleaning, ambil apa adanya)
             id_ = row['id']
             listing_url = row['listing_url']
-            brand = row['brand'].strip() if row.get('brand') else "UNKNOWN BRAND"
-            model = row['model'].strip() if row.get('model') else "UNKNOWN MODEL"
-            variant = row['variant'].strip() if row.get('variant') else "NO VARIANT"
+            condition = row.get('condition')
+            brand = row.get('brand')  # tanpa strip/cleaning
+            model = row.get('model')
+            variant = row.get('variant')
             information_ads = row['information_ads']
             location = row['location']
             price = row['price']
@@ -161,25 +165,35 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             elif isinstance(images, str):  
                 images = images
             else:
-                images = []
+                images = None
 
-            # Konversi tanggal
+            # Konversi tanggal - PERBAIKAN: Jangan skip data yang information_ads_date nya bukan hari ini
             last_scraped_at = parse_datetime(row['last_scraped_at'])
             version = row['version']
             created_at = parse_datetime(row['created_at'])
             sold_at = parse_datetime(row['sold_at'])
             status = row['status']
-            information_ads_date = parse_datetime(row['information_ads_date'])
+            
+            # PERBAIKAN: Ambil information_ads_date dari sumber dan jangan filter berdasarkan tanggal hari ini
+            information_ads_date = None
+            if row.get('information_ads_date'):
+                if isinstance(row['information_ads_date'], str):
+                    try:
+                        information_ads_date = datetime.strptime(row['information_ads_date'], "%Y-%m-%d").date()
+                    except ValueError:
+                        try:
+                            information_ads_date = datetime.strptime(row['information_ads_date'], "%Y-%m-%d %H:%M:%S").date()
+                        except ValueError:
+                            information_ads_date = None
+                elif hasattr(row['information_ads_date'], 'date'):
+                    information_ads_date = row['information_ads_date'].date()
+                else:
+                    information_ads_date = row['information_ads_date']
 
-            # Filter hanya jika information_ads_date adalah hari ini
-            if information_ads_date and information_ads_date.date() != datetime.today().date():
-                skipped_count += 1
-                skipped_records.append({
-                    "source": source,
-                    "id": id_,
-                    "reason": "Not today's information_ads_date"
-                })
-                continue
+            # HAPUS FILTER TANGGAL - Ambil semua data, tidak hanya hari ini
+            # if information_ads_date and information_ads_date != datetime.today().date():
+            #     skipped_count += 1
+            #     continue
 
             # Konversi harga dan mileage
             price_int = convert_price(price)
@@ -201,20 +215,22 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                 })
                 continue
 
-            # Cek untuk ID standar mobil berdasarkan brand, model, dan variant
+            # Cek untuk ID standar mobil berdasarkan brand, model_group, model, dan variant
             query_check = f"SELECT cars_standard_id FROM {table_name} WHERE id = $1"
             existing_standard_id = await conn.fetchval(query_check, id_)
 
             cars_standard_id = existing_standard_id
             if not existing_standard_id:
+                # Query normalisasi baru: cek brand, model_group, model, variant secara berurutan
                 norm_query = """
                     SELECT id FROM cars_standard
-                    WHERE UPPER(brand_norm) = $1
-                      AND (UPPER(model_norm) = $2 OR UPPER(model_raw) = $2)
-                      AND $3 IN (UPPER(variant_norm), UPPER(variant_raw), UPPER(variant_raw2))
+                    WHERE brand_norm = $1
+                      AND ($2 IN (model_group_norm, model_group_raw))
+                      AND ($3 IN (model_norm, model_raw))
+                      AND ($4 IN (variant_norm, variant_raw, variant_raw2))
                     LIMIT 1
                 """
-                norm_result = await conn.fetchrow(norm_query, brand, model, variant)
+                norm_result = await conn.fetchrow(norm_query, brand, model_group, model, variant)
                 if norm_result:
                     cars_standard_id = norm_result['id']
 
@@ -222,7 +238,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             if source == 'mudahmy':
                 query = f"""
                     INSERT INTO {table_name} (
-                        id, listing_url, brand, model, variant, information_ads,
+                        id, listing_url, condition, brand, model, variant, information_ads,
                         location, price, year, mileage, transmission, seat_capacity,
                         images, last_scraped_at, version, created_at, sold_at, status,
                         cars_standard_id, source, information_ads_date
@@ -230,10 +246,11 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                         $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21
+                        $20, $21, $22
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         listing_url = EXCLUDED.listing_url,
+                        condition = EXCLUDED.condition,
                         brand = EXCLUDED.brand,
                         model = EXCLUDED.model,
                         variant = EXCLUDED.variant,
@@ -255,7 +272,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                         information_ads_date = EXCLUDED.information_ads_date
                 """
                 params = [
-                    id_, listing_url, brand, model, variant, information_ads,
+                    id_, listing_url, condition, brand, model, variant, information_ads,
                     location, price_int, year_int, mileage_int, transmission, seat_capacity,
                     images, last_scraped_at, version, created_at, sold_at, status,
                     cars_standard_id, source, information_ads_date
@@ -263,7 +280,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
             elif source == 'carlistmy':
                 query = f"""
                     INSERT INTO {table_name} (
-                        id, listing_url, brand, model_group, model, variant,
+                        id, listing_url, condition, brand, model_group, model, variant,
                         information_ads, location, price, year, mileage,
                         transmission, seat_capacity, images, last_scraped_at,
                         version, created_at, sold_at, status,
@@ -272,10 +289,11 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                     VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                         $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22
+                        $20, $21, $22, $23
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         listing_url = EXCLUDED.listing_url,
+                        condition = EXCLUDED.condition,
                         brand = EXCLUDED.brand,
                         model_group = EXCLUDED.model_group,
                         model = EXCLUDED.model,
@@ -298,50 +316,7 @@ async def insert_or_update_data_into_local_db(data, table_name, source):
                         information_ads_date = EXCLUDED.information_ads_date
                 """
                 params = [
-                    id_, listing_url, brand, model_group, model, variant,
-                    information_ads, location, price_int, year_int, mileage_int,
-                    transmission, seat_capacity, images, last_scraped_at,
-                    version, created_at, sold_at, status,
-                    cars_standard_id, source, information_ads_date
-                ]
-            else:
-                query = f"""
-                    INSERT INTO {table_name} (
-                        id, listing_url, brand, model, variant,
-                        information_ads, location, price, year, mileage,
-                        transmission, seat_capacity, images, last_scraped_at,
-                        version, created_at, sold_at, status,
-                        cars_standard_id, source, information_ads_date
-                    )
-                    VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21
-                    )
-                    ON CONFLICT (id) DO UPDATE SET
-                        listing_url = EXCLUDED.listing_url,
-                        brand = EXCLUDED.brand,
-                        model = EXCLUDED.model,
-                        variant = EXCLUDED.variant,
-                        information_ads = EXCLUDED.information_ads,
-                        location = EXCLUDED.location,
-                        price = EXCLUDED.price,
-                        year = EXCLUDED.year,
-                        mileage = EXCLUDED.mileage,
-                        transmission = EXCLUDED.transmission,
-                        seat_capacity = EXCLUDED.seat_capacity,
-                        images = EXCLUDED.images,
-                        last_scraped_at = EXCLUDED.last_scraped_at,
-                        version = EXCLUDED.version,
-                        created_at = EXCLUDED.created_at,
-                        sold_at = EXCLUDED.sold_at,
-                        status = EXCLUDED.status,
-                        cars_standard_id = COALESCE(EXCLUDED.cars_standard_id, {table_name}.cars_standard_id),
-                        source = EXCLUDED.source,
-                        information_ads_date = EXCLUDED.information_ads_date
-                """
-                params = [
-                    id_, listing_url, brand, model, variant,
+                    id_, listing_url, condition, brand, model_group, model, variant,
                     information_ads, location, price_int, year_int, mileage_int,
                     transmission, seat_capacity, images, last_scraped_at,
                     version, created_at, sold_at, status,
@@ -378,28 +353,34 @@ async def insert_or_update_price_history_by_listing_url(conn_source, conn_target
     rows = await conn_source.fetch(f"SELECT listing_url, old_price, new_price, changed_at FROM {table_price_history_source}")
     inserted = 0
     skipped = 0
-    
+
     # Ambil semua listing_url di target
     rows_cars = await conn_target.fetch(f"SELECT listing_url FROM {table_price_history_target.replace('price_history_', 'cars_')}")
     existing_urls = set(row['listing_url'] for row in rows_cars)
-    
+
     for row in rows:
         listing_url = row['listing_url']
         if listing_url not in existing_urls:
             skipped += 1
             continue
             
-        # FIX: Gunakan nama constraint yang benar
+        # Determine which constraint name to use based on the table
+        if "mudahmy" in table_price_history_target:
+            conflict_constraint = "unique_listing_url_changed_at_mudah"
+        else:
+            conflict_constraint = "unique_listing_url_changed_at"
+
+        # Insert or update the price history
         await conn_target.execute(f"""
             INSERT INTO {table_price_history_target} (listing_url, old_price, new_price, changed_at)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT ON CONSTRAINT unique_listing_url_changed_at 
+            ON CONFLICT ON CONSTRAINT {conflict_constraint}
             DO UPDATE SET 
                 old_price = EXCLUDED.old_price, 
                 new_price = EXCLUDED.new_price
         """, listing_url, row['old_price'], row['new_price'], row['changed_at'])
         inserted += 1
-        
+
     logger.info(f"[{table_price_history_target}] Inserted {inserted} records, Skipped {skipped} records due to missing listing_url.")
     return inserted, skipped
 

@@ -32,7 +32,9 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', django_settings)
 django.setup()
 
 from django.db import connection
-from main.models import CarStandard, CarUnified
+from main.models import CarUnified
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +50,35 @@ def find_cars_standard_id(brand, model_group, model, variant):
         return None
     
     try:
+        # Use direct database connection instead of Django ORM
+        db_config = {
+            'host': os.getenv('DB_HOST', '127.0.0.1'),
+            'port': int(os.getenv('DB_PORT', 5432)),
+            'database': os.getenv('DB_NAME', 'db_test'),
+            'user': os.getenv('DB_USER', 'fanfan'),
+            'password': os.getenv('DB_PASSWORD', 'cenanun')
+        }
+        
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
         # Step 1: Cari berdasarkan brand_norm (case insensitive)
-        brand_matches = CarStandard.objects.filter(
-            brand_norm__iexact=brand.strip()
-        )
+        cur.execute("""
+            SELECT id, brand_norm, model_group_norm, model_norm, variant_norm,
+                   model_group_raw, model_raw, variant_raw, variant_raw2
+            FROM cars_standard 
+            WHERE UPPER(brand_norm) = UPPER(%s)
+        """, (brand.strip(),))
+        
+        brand_matches = cur.fetchall()
         
         for candidate in brand_matches:
             # Step 2: Cek model_group - prioritas model_group_norm dulu, lalu model_group_raw
             model_group_match = False
             if model_group and model_group.strip():  # Jika ada model_group dari input
-                if candidate.model_group_norm and candidate.model_group_norm.strip().upper() == model_group.strip().upper():
+                if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group.strip().upper():
                     model_group_match = True
-                elif candidate.model_group_raw and candidate.model_group_raw.strip().upper() == model_group.strip().upper():
+                elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group.strip().upper():
                     model_group_match = True
             else:  # Jika tidak ada model_group dari input, skip pengecekan model_group
                 model_group_match = True
@@ -69,9 +88,9 @@ def find_cars_standard_id(brand, model_group, model, variant):
             
             # Step 3: Cek model - prioritas model_norm dulu, lalu model_raw
             model_match = False
-            if candidate.model_norm and candidate.model_norm.strip().upper() == model.strip().upper():
+            if candidate['model_norm'] and candidate['model_norm'].strip().upper() == model.strip().upper():
                 model_match = True
-            elif candidate.model_raw and candidate.model_raw.strip().upper() == model.strip().upper():
+            elif candidate['model_raw'] and candidate['model_raw'].strip().upper() == model.strip().upper():
                 model_match = True
             
             if not model_match:
@@ -79,16 +98,18 @@ def find_cars_standard_id(brand, model_group, model, variant):
             
             # Step 4: Cek variant - prioritas variant_norm, lalu variant_raw, lalu variant_raw2
             variant_match = False
-            if candidate.variant_norm and candidate.variant_norm.strip().upper() == variant.strip().upper():
+            if candidate['variant_norm'] and candidate['variant_norm'].strip().upper() == variant.strip().upper():
                 variant_match = True
-            elif candidate.variant_raw and candidate.variant_raw.strip().upper() == variant.strip().upper():
+            elif candidate['variant_raw'] and candidate['variant_raw'].strip().upper() == variant.strip().upper():
                 variant_match = True
-            elif candidate.variant_raw2 and candidate.variant_raw2.strip().upper() == variant.strip().upper():
+            elif candidate['variant_raw2'] and candidate['variant_raw2'].strip().upper() == variant.strip().upper():
                 variant_match = True
             
             if variant_match:
-                cars_standard_id = candidate.id
+                cars_standard_id = candidate['id']
                 break  # Keluar dari loop jika sudah ditemukan match
+        
+        conn.close()
                 
     except Exception as e:
         logger.error(f"Error dalam pencarian cars_standard_id: {e}")
@@ -188,8 +209,21 @@ def fill_all_cars_standard_id():
     all_failed_records = []
     
     try:
-        # Check if cars_standard table has data
-        cars_standard_count = CarStandard.objects.count()
+        # Check if cars_standard table has data using direct query
+        db_config = {
+            'host': os.getenv('DB_HOST', '127.0.0.1'),
+            'port': int(os.getenv('DB_PORT', 5432)),
+            'database': os.getenv('DB_NAME', 'db_test'),
+            'user': os.getenv('DB_USER', 'fanfan'),
+            'password': os.getenv('DB_PASSWORD', 'cenanun')
+        }
+        
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM cars_standard")
+        cars_standard_count = cur.fetchone()[0]
+        conn.close()
+        
         if cars_standard_count == 0:
             logger.error("❌ No cars_standard data found in database!")
             logger.error("💡 Please run: python import_cars_standard.py")

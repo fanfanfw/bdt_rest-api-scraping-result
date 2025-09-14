@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from app.endpoints import router, admin_router
+from app.endpoints import router, admin_router, django_router
 from app.dependencies import verify_api_key
 
 app = FastAPI(
@@ -18,5 +18,5 @@ app.add_middleware(
 )
 
 app.include_router(router, dependencies=[Depends(verify_api_key)])
-
 app.include_router(admin_router)
+app.include_router(django_router)  # Unlimited access for Django

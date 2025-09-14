@@ -7,7 +7,7 @@
 -- =============================================
 
 CREATE TABLE IF NOT EXISTS cars_standard (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT PRIMARY KEY,
     
     -- Normalized car data fields
     brand_norm VARCHAR(100) NOT NULL,

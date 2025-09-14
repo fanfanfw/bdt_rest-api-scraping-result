@@ -1,5 +1,4 @@
 import logging
-import asyncpg
 import os
 import re
 import pandas as pd
@@ -7,26 +6,18 @@ import matplotlib.pyplot as plt
 import io
 import numpy as np
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, List, Tuple
+from datetime import datetime, timedelta, date
+from typing import Optional, List, Tuple, Dict, Any
 from fastapi import HTTPException
 from app.database import get_local_db_connection
 from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
 
 logger = logging.getLogger(__name__)
 
-DB_CARLISTMY = os.getenv("DB_CARLISTMY", "db_scrap")
-DB_CARLISTMY_USERNAME = os.getenv("DB_CARLISTMY_USERNAME", "fanfan")
-DB_CARLISTMY_PASSWORD = os.getenv("DB_CARLISTMY_PASSWORD", "cenanun")
-DB_CARLISTMY_HOST = os.getenv("DB_CARLISTMY_HOST", "192.168.1.207")
-DB_MUDAHMY = os.getenv("DB_MUDAHMY", "db_scrap")
-DB_MUDAHMY_USERNAME = os.getenv("DB_MUDAHMY_USERNAME", "fanfan")
-DB_MUDAHMY_PASSWORD = os.getenv("DB_MUDAHMY_PASSWORD", "cenanun")
-DB_MUDAHMY_HOST = os.getenv("DB_MUDAHMY_HOST", "192.168.1.207")
-TB_CARLISTMY = os.getenv("TB_CARLISTMY", "cars_carlistmy")
-TB_MUDAHMY = os.getenv("TB_MUDAHMY", "cars_mudahmy")
-TB_PRICE_HISTORY_MUDAHMY = os.getenv("TB_PRICE_HISTORY_MUDAHMY", "price_history_mudahmy")
-TB_PRICE_HISTORY_CARLISTMY = os.getenv("TB_PRICE_HISTORY_CARLISTMY", "price_history_carlistmy")
+# Remote database variables removed - no longer needed
+TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
+TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
+TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 
 def convert_price(price_str):
     if isinstance(price_str, int):
@@ -59,58 +50,11 @@ def parse_datetime(value):
         return value
     return None
 
-async def fetch_data_from_remote_db(conn, source=None):
-    if source == 'carlistmy':
-        query = """
-            SELECT 
-                id, listing_url, condition, brand, model_group, model, variant,
-                information_ads, location, price, year, mileage,
-                transmission, seat_capacity, engine_cc, fuel_type,
-                images, last_scraped_at, version, created_at, sold_at, 
-                status, last_status_check, information_ads_date, ads_tag,
-                is_deleted
-            FROM public.cars_scrap_carlistmy
-            ORDER BY information_ads_date DESC, last_scraped_at DESC
-        """
-    elif source == 'mudahmy':
-        query = """
-            SELECT 
-                id, listing_url, condition, brand, model_group, model, variant,
-                information_ads, location, price, year, mileage,
-                transmission, seat_capacity, images, last_scraped_at,
-                version, created_at, sold_at, status, last_status_check,
-                information_ads_date
-            FROM public.cars_scrap_mudahmy
-            ORDER BY information_ads_date DESC, last_scraped_at DESC
-        """
-    else:
-        raise HTTPException(status_code=400, detail="Invalid source specified")
-    
-    rows = await conn.fetch(query)  
-    return rows
+# fetch_data_from_remote_db function removed - no longer needed
 
-async def verify_remote_tables(conn):
-    tables = await conn.fetch("""
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public'
-    """)
-    logger.info("📋 Daftar tabel di database remote:")
-    for table in tables:
-        logger.info(f"- {table['table_name']}")
+# verify_remote_tables function removed - no longer needed
 
-async def get_remote_db_connection(db_name, db_user, db_host, db_password):
-    logger.info(f"🔌 Mencoba terkoneksi ke: {db_user}@{db_host}/{db_name}")
-    conn = await asyncpg.connect(
-        user=db_user,
-        password=db_password,
-        database=db_name,
-        host=db_host
-    )
-    # Verifikasi koneksi berhasil ke database yang benar
-    db_name_connected = await conn.fetchval("SELECT current_database()")
-    logger.info(f"✅ Terkoneksi ke database: {db_name_connected}")
-    return conn
+# get_remote_db_connection function removed - no longer needed
 
 def clean_and_standardize_brand(text):
     if not text or text.strip() == "-":
@@ -127,386 +71,17 @@ def clean_and_standardize_variant(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip().upper()
 
-async def insert_or_update_data_into_local_db(data, table_name, source):
-    from tqdm import tqdm
-    import json
+# insert_or_update_data_into_local_db function removed - sync now handled by sync_cars.py
 
-    conn = await get_local_db_connection()
-    skipped_records = []
-    inserted_count = 0
-    skipped_count = 0
+# get_id_mapping function removed - no longer needed
 
-    try:
-        print(f"\n🚀 Memulai proses insert/update untuk {source.upper()}...")
+# insert_or_update_price_history_by_listing_url function removed - sync now handled by sync_cars.py
 
-        for row in tqdm(data, desc=f"Inserting {source}"):
-            # Ambil semua kolom yang relevan (TANPA regex/cleaning, ambil apa adanya)
-            id_ = row['id']
-            listing_url = row['listing_url']
-            condition = row.get('condition')
-            brand = row.get('brand')  # tanpa strip/cleaning
-            model = row.get('model')
-            variant = row.get('variant')
-            information_ads = row['information_ads']
-            location = row['location']
-            price = row['price']
-            year = row['year']
-            mileage = row['mileage']
-            transmission = row['transmission']
-            seat_capacity = row['seat_capacity']
+# sync_data_from_remote function removed - sync now handled by sync_cars.py command
 
-            # Khusus carlistmy
-            model_group = row.get('model_group')
-            
-            # Konversi images dari list ke string JSON atau string biasa (dipisahkan koma)
-            images = row['images']
-            if isinstance(images, list):  
-                images = json.dumps(images)  
-            elif isinstance(images, str):  
-                images = images
-            else:
-                images = None
+# fetch_price_history_from_remote_db function removed - no longer needed
 
-            # Konversi tanggal - PERBAIKAN: Jangan skip data yang information_ads_date nya bukan hari ini
-            last_scraped_at = parse_datetime(row['last_scraped_at'])
-            version = row['version']
-            created_at = parse_datetime(row['created_at'])
-            sold_at = parse_datetime(row['sold_at'])
-            status = row['status']
-            
-            # PERBAIKAN: Ambil information_ads_date dari sumber dan jangan filter berdasarkan tanggal hari ini
-            information_ads_date = None
-            if row.get('information_ads_date'):
-                if isinstance(row['information_ads_date'], str):
-                    try:
-                        information_ads_date = datetime.strptime(row['information_ads_date'], "%Y-%m-%d").date()
-                    except ValueError:
-                        try:
-                            information_ads_date = datetime.strptime(row['information_ads_date'], "%Y-%m-%d %H:%M:%S").date()
-                        except ValueError:
-                            information_ads_date = None
-                elif hasattr(row['information_ads_date'], 'date'):
-                    information_ads_date = row['information_ads_date'].date()
-                else:
-                    information_ads_date = row['information_ads_date']
-
-            # HAPUS FILTER TANGGAL - Ambil semua data, tidak hanya hari ini
-            # if information_ads_date and information_ads_date != datetime.today().date():
-            #     skipped_count += 1
-            #     continue
-
-            # Konversi harga dan mileage
-            price_int = convert_price(price)
-            year_int = int(year) if year else None
-            mileage_int = convert_mileage(mileage)
-
-            # Pastikan field wajib tidak NULL
-            if any(val is None for val in [brand, model, variant, mileage_int, year_int]):
-                skipped_count += 1
-                skipped_records.append({
-                    "source": source,
-                    "id": id_,
-                    "brand": brand,
-                    "model": model,
-                    "variant": variant,
-                    "mileage": mileage,
-                    "year": year,
-                    "reason": "Field is None"
-                })
-                continue
-
-            # Cek untuk ID standar mobil berdasarkan brand, model_group, model, dan variant
-            query_check = f"SELECT cars_standard_id FROM {table_name} WHERE id = $1"
-            existing_standard_id = await conn.fetchval(query_check, id_)
-
-            cars_standard_id = existing_standard_id
-            if not existing_standard_id:
-                # Query normalisasi baru: gunakan TRIM agar spasi di awal/akhir diabaikan
-                norm_query = """
-                    SELECT id FROM cars_standard
-                    WHERE TRIM(brand_norm) = TRIM($1)
-                      AND (TRIM($2) IN (TRIM(model_group_norm), TRIM(model_group_raw)))
-                      AND (TRIM($3) IN (TRIM(model_norm), TRIM(model_raw)))
-                      AND (TRIM($4) IN (TRIM(variant_norm), TRIM(variant_raw), TRIM(variant_raw2)))
-                    LIMIT 1
-                """
-                norm_result = await conn.fetchrow(norm_query, brand, model_group, model, variant)
-                if norm_result:
-                    cars_standard_id = norm_result['id']
-
-            # Menyusun query INSERT atau UPDATE
-            if source == 'mudahmy':
-                query = f"""
-                    INSERT INTO {table_name} (
-                        id, listing_url, condition, brand, model_group, model, variant, information_ads,
-                        location, price, year, mileage, transmission, seat_capacity,
-                        images, last_scraped_at, version, created_at, sold_at, status,
-                        cars_standard_id, source, information_ads_date
-                    )
-                    VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22, $23
-                    )
-                    ON CONFLICT (id) DO UPDATE SET
-                        listing_url = EXCLUDED.listing_url,
-                        condition = EXCLUDED.condition,
-                        brand = EXCLUDED.brand,
-                        model_group = EXCLUDED.model_group,
-                        model = EXCLUDED.model,
-                        variant = EXCLUDED.variant,
-                        information_ads = EXCLUDED.information_ads,
-                        location = EXCLUDED.location,
-                        price = EXCLUDED.price,
-                        year = EXCLUDED.year,
-                        mileage = EXCLUDED.mileage,
-                        transmission = EXCLUDED.transmission,
-                        seat_capacity = EXCLUDED.seat_capacity,
-                        images = EXCLUDED.images,
-                        last_scraped_at = EXCLUDED.last_scraped_at,
-                        version = EXCLUDED.version,
-                        created_at = EXCLUDED.created_at,
-                        sold_at = EXCLUDED.sold_at,
-                        status = EXCLUDED.status,
-                        cars_standard_id = COALESCE(EXCLUDED.cars_standard_id, {table_name}.cars_standard_id),
-                        source = EXCLUDED.source,
-                        information_ads_date = EXCLUDED.information_ads_date
-                """
-                params = [
-                    id_, listing_url, condition, brand, model_group, model, variant, information_ads,
-                    location, price_int, year_int, mileage_int, transmission, seat_capacity,
-                    images, last_scraped_at, version, created_at, sold_at, status,
-                    cars_standard_id, source, information_ads_date
-                ]
-            elif source == 'carlistmy':
-                query = f"""
-                    INSERT INTO {table_name} (
-                        id, listing_url, condition, brand, model_group, model, variant,
-                        information_ads, location, price, year, mileage,
-                        transmission, seat_capacity, images, last_scraped_at,
-                        version, created_at, sold_at, status,
-                        cars_standard_id, source, information_ads_date
-                    )
-                    VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22, $23
-                    )
-                    ON CONFLICT (id) DO UPDATE SET
-                        listing_url = EXCLUDED.listing_url,
-                        condition = EXCLUDED.condition,
-                        brand = EXCLUDED.brand,
-                        model_group = EXCLUDED.model_group,
-                        model = EXCLUDED.model,
-                        variant = EXCLUDED.variant,
-                        information_ads = EXCLUDED.information_ads,
-                        location = EXCLUDED.location,
-                        price = EXCLUDED.price,
-                        year = EXCLUDED.year,
-                        mileage = EXCLUDED.mileage,
-                        transmission = EXCLUDED.transmission,
-                        seat_capacity = EXCLUDED.seat_capacity,
-                        images = EXCLUDED.images,
-                        last_scraped_at = EXCLUDED.last_scraped_at,
-                        version = EXCLUDED.version,
-                        created_at = EXCLUDED.created_at,
-                        sold_at = EXCLUDED.sold_at,
-                        status = EXCLUDED.status,
-                        cars_standard_id = COALESCE(EXCLUDED.cars_standard_id, {table_name}.cars_standard_id),
-                        source = EXCLUDED.source,
-                        information_ads_date = EXCLUDED.information_ads_date
-                """
-                params = [
-                    id_, listing_url, condition, brand, model_group, model, variant,
-                    information_ads, location, price_int, year_int, mileage_int,
-                    transmission, seat_capacity, images, last_scraped_at,
-                    version, created_at, sold_at, status,
-                    cars_standard_id, source, information_ads_date
-                ]
-
-            await conn.execute(query, *params)
-            inserted_count += 1
-
-        # Save skipped records
-        if skipped_records:
-            skipped_df = pd.DataFrame(skipped_records)
-            skipped_df.to_csv(f"skipped_{source}.csv", index=False)
-            print(f"⚠️ {len(skipped_records)} data yang dilewati disimpan ke file skipped_{source}.csv")
-
-        return inserted_count, skipped_count
-
-    finally:
-        await conn.close()
-
-async def get_id_mapping(conn_source, conn_target, table_source, table_target):
-    rows_source = await conn_source.fetch(f"SELECT id, listing_url FROM {table_source}")
-    rows_target = await conn_target.fetch(f"SELECT id, listing_url FROM {table_target}")
-    source_map = {row['listing_url']: row['id'] for row in rows_source}
-    target_map = {row['listing_url']: row['id'] for row in rows_target}
-    id_map = {}
-    for url, source_id in source_map.items():
-        target_id = target_map.get(url)
-        if target_id:
-            id_map[source_id] = target_id
-    return id_map
-
-async def insert_or_update_price_history_by_listing_url(conn_source, conn_target, table_price_history_source, table_price_history_target):
-    rows = await conn_source.fetch(f"SELECT listing_url, old_price, new_price, changed_at FROM {table_price_history_source}")
-    inserted = 0
-    skipped = 0
-
-    # Ambil semua listing_url di target
-    rows_cars = await conn_target.fetch(f"SELECT listing_url FROM {table_price_history_target.replace('price_history_', 'cars_')}")
-    existing_urls = set(row['listing_url'] for row in rows_cars)
-
-    for row in rows:
-        listing_url = row['listing_url']
-        if listing_url not in existing_urls:
-            skipped += 1
-            continue
-            
-        # Determine which constraint name to use based on the table
-        if "mudahmy" in table_price_history_target:
-            conflict_constraint = "unique_listing_url_changed_at_mudah"
-        else:
-            conflict_constraint = "unique_listing_url_changed_at"
-
-        # Insert or update the price history
-        await conn_target.execute(f"""
-            INSERT INTO {table_price_history_target} (listing_url, old_price, new_price, changed_at)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT ON CONSTRAINT {conflict_constraint}
-            DO UPDATE SET 
-                old_price = EXCLUDED.old_price, 
-                new_price = EXCLUDED.new_price
-        """, listing_url, row['old_price'], row['new_price'], row['changed_at'])
-        inserted += 1
-
-    logger.info(f"[{table_price_history_target}] Inserted {inserted} records, Skipped {skipped} records due to missing listing_url.")
-    return inserted, skipped
-
-async def sync_data_from_remote():
-    logger.info("🚀 Memulai proses sinkronisasi data dari remote database...")
-
-    result_summary = {}
-
-    # Sinkronisasi dengan CarlistMY
-    logger.info("[CarlistMY] Membuka koneksi database remote...")
-    remote_conn_carlistmy = await get_remote_db_connection(DB_CARLISTMY, DB_CARLISTMY_USERNAME, DB_CARLISTMY_HOST, DB_CARLISTMY_PASSWORD)
-    logger.info("[CarlistMY] Berhasil terkoneksi.")
-    
-    data_carlistmy = await fetch_data_from_remote_db(remote_conn_carlistmy, 'carlistmy')
-    logger.info(f"[CarlistMY] Total data yang diambil: {len(data_carlistmy)}")
-
-    inserted_carlistmy, skipped_carlistmy = await insert_or_update_data_into_local_db(data_carlistmy, f'{TB_CARLISTMY}', 'carlistmy')
-    logger.info(f"[CarlistMY] Inserted: {inserted_carlistmy}, Skipped: {skipped_carlistmy}")
-
-    # Sinkronisasi price_history dari CarlistMY berdasarkan listing_url
-    local_conn = await get_local_db_connection()
-    await insert_or_update_price_history_by_listing_url(
-        remote_conn_carlistmy, local_conn,
-        'price_history_scrap_carlistmy', TB_PRICE_HISTORY_CARLISTMY
-    )
-    await local_conn.close()
-    logger.info("[CarlistMY] Sinkronisasi price_history selesai.")
-
-    result_summary['carlistmy'] = {
-        'total_fetched': len(data_carlistmy),
-        'inserted': inserted_carlistmy,
-        'skipped': skipped_carlistmy
-    }
-
-    # Sinkronisasi dengan MudahMY
-    logger.info("[MudahMY] Membuka koneksi database remote...")
-    remote_conn_mudahmy = await get_remote_db_connection(DB_MUDAHMY, DB_MUDAHMY_USERNAME, DB_MUDAHMY_HOST, DB_MUDAHMY_PASSWORD)
-    logger.info("[MudahMY] Berhasil terkoneksi.")
-    
-    data_mudahmy = await fetch_data_from_remote_db(remote_conn_mudahmy, 'mudahmy')
-    logger.info(f"[MudahMY] Total data yang diambil: {len(data_mudahmy)}")
-
-    inserted_mudahmy, skipped_mudahmy = await insert_or_update_data_into_local_db(data_mudahmy, f'{TB_MUDAHMY}', 'mudahmy')
-    logger.info(f"[MudahMY] Inserted: {inserted_mudahmy}, Skipped: {skipped_mudahmy}")
-
-    # Sinkronisasi price_history dari MudahMY berdasarkan listing_url
-    local_conn2 = await get_local_db_connection()
-    await insert_or_update_price_history_by_listing_url(
-        remote_conn_mudahmy, local_conn2,
-        'price_history_scrap_mudahmy', TB_PRICE_HISTORY_MUDAHMY
-    )
-    await local_conn2.close()
-    logger.info("[MudahMY] Sinkronisasi price_history selesai.")
-
-    result_summary['mudahmy'] = {
-        'total_fetched': len(data_mudahmy),
-        'inserted': inserted_mudahmy,
-        'skipped': skipped_mudahmy
-    }
-
-    logger.info("✅ Proses sinkronisasi semua sumber selesai.")
-    result_summary["status"] = "success"
-    return result_summary
-
-async def fetch_price_history_from_remote_db(conn, source):
-    """
-    Mengambil data price history berdasarkan sumbernya, apakah carlistmy atau mudahmy.
-    """
-    if source == 'carlistmy':
-        query = """
-            SELECT car_id, old_price, new_price, changed_at 
-            FROM public.price_history_scrap_carlistmy
-        """
-    elif source == 'mudahmy':
-        query = """
-            SELECT car_id, old_price, new_price, changed_at 
-            FROM public.price_history_scrap_mudahmy
-        """
-    else:
-        raise HTTPException(status_code=400, detail="Invalid source for price history.")
-
-    rows = await conn.fetch(query)
-    return rows
-
-async def insert_or_update_price_history(data, table_name):
-    conn = await get_local_db_connection()
-    try:
-        if table_name == f"{TB_PRICE_HISTORY_CARLISTMY}":
-            cars_table = TB_CARLISTMY
-        elif table_name == f"{TB_PRICE_HISTORY_MUDAHMY}":
-            cars_table = TB_MUDAHMY
-        else:
-            raise Exception("Unknown table name for price history.")
-
-        existing_ids = await conn.fetch(f"SELECT id FROM {cars_table}")
-        existing_ids_set = set(row['id'] for row in existing_ids)
-
-        inserted = 0
-        skipped = 0
-
-        for row in data:
-            car_id = row['car_id']
-            old_price = row['old_price']
-            new_price = row['new_price']
-            changed_at = row['changed_at']
-
-            if car_id not in existing_ids_set:
-                skipped += 1
-                continue
-
-            await conn.execute(f"""
-                INSERT INTO {table_name} (car_id, old_price, new_price, changed_at)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (car_id, changed_at) 
-                DO UPDATE SET 
-                    old_price = EXCLUDED.old_price,
-                    new_price = EXCLUDED.new_price,
-                    changed_at = EXCLUDED.changed_at
-            """, car_id, old_price, new_price, changed_at)
-            inserted += 1
-
-        logger.info(f"[{table_name}] Inserted {inserted} records, Skipped {skipped} records due to missing cars.")
-
-    finally:
-        await conn.close()
+# insert_or_update_price_history function removed - sync now handled by sync_cars.py
 
 async def get_brand_distribution_carlistmy() -> List[BrandCount]:
     """
@@ -517,8 +92,8 @@ async def get_brand_distribution_carlistmy() -> List[BrandCount]:
     try:
         query = f"""
             SELECT brand, COUNT(*) AS total
-            FROM {TB_CARLISTMY}
-            WHERE brand IS NOT NULL
+            FROM {TB_UNIFIED}
+            WHERE brand IS NOT NULL AND source = 'carlistmy'
             GROUP BY brand
             ORDER BY total DESC
         """
@@ -549,11 +124,6 @@ async def get_price_vs_mileage_filtered(
 ) -> List[dict]:
     conn = await get_local_db_connection()
     try:
-        if source and source in ["mudahmy", "carlistmy"]:
-            tables = [f"cars_{source}"]
-        else:
-            tables = ["cars_mudahmy", "cars_carlistmy"]
-
         conditions = []
         values = []
         param_index = 1  
@@ -578,53 +148,36 @@ async def get_price_vs_mileage_filtered(
             values.append(year)
             param_index += 1
 
+        # Add source filter if specified
+        if source and source in ["mudahmy", "carlistmy"]:
+            conditions.append(f"c.source = ${param_index}")
+            values.append(source)
+            param_index += 1
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-
-        # Create individual queries for each table
-        select_queries = []
-        for table in tables:
-            source_name = table.replace("cars_", "")
-            select_queries.append(f"""
-                SELECT 
-                    c.id,
-                    c.brand,
-                    c.model,
-                    c.variant,
-                    c.price,
-                    c.mileage,
-                    c.year,
-                    '{source_name}' as source,
-                    c.last_scraped_at as scraped_at,
-                    c.information_ads_date as ads_date,
-                    COALESCE(c.information_ads_date, c.last_scraped_at) as sort_date
-                FROM {table} c
-                LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
-                WHERE {where_clause}
-            """)
-
-        # Combine queries with UNION ALL and add global sorting
+        
+        # Create query for unified table
         limit_param = param_index
         offset_param = param_index + 1
         
-        sort_column = "sort_date" if sort_by == "ads_date" else "scraped_at"
+        sort_column = "information_ads_date" if sort_by == "ads_date" else "last_scraped_at"
         sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
         
         final_query = f"""
-            WITH combined_data AS (
-                {" UNION ALL ".join(select_queries)}
-            )
             SELECT 
-                brand,
-                model,
-                variant,
-                price,
-                mileage,
-                year,
-                source,
-                scraped_at,
-                ads_date
-            FROM combined_data
-            ORDER BY {sort_column} {sort_order} NULLS LAST, id DESC
+                c.brand,
+                c.model,
+                c.variant,
+                c.price,
+                c.mileage,
+                c.year,
+                c.source,
+                c.last_scraped_at as scraped_at,
+                c.information_ads_date as ads_date
+            FROM {TB_UNIFIED} c
+            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            WHERE {where_clause}
+            ORDER BY c.{sort_column} {sort_order} NULLS LAST, c.id DESC
             LIMIT ${limit_param} OFFSET ${offset_param}
         """
 
@@ -697,11 +250,6 @@ async def get_price_vs_mileage_total_count(
 ) -> int:
     conn = await get_local_db_connection()
     try:
-        if source and source in ["mudahmy", "carlistmy"]:
-            tables = [f"cars_{source}"]
-        else:
-            tables = ["cars_mudahmy", "cars_carlistmy"]
-
         conditions = []
         values = []
         param_index = 1  
@@ -726,23 +274,23 @@ async def get_price_vs_mileage_total_count(
             values.append(year)
             param_index += 1
 
+        # Add source filter if specified
+        if source and source in ["mudahmy", "carlistmy"]:
+            conditions.append(f"c.source = ${param_index}")
+            values.append(source)
+            param_index += 1
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        count_queries = []
-        for table in tables:
-            count_query = f"""
-                SELECT COUNT(*) AS total
-                FROM {table} c
-                LEFT JOIN cars_standard cs ON c.cars_standard_id = cs.id
-                WHERE {where_clause}
-            """
-            count_queries.append(count_query)
-
-        final_count_query = " UNION ALL ".join(count_queries)
-        rows = await conn.fetch(final_count_query, *values)
-
-        total_count = sum(row['total'] for row in rows)
-        return total_count
+        count_query = f"""
+            SELECT COUNT(*) AS total
+            FROM {TB_UNIFIED} c
+            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            WHERE {where_clause}
+        """
+        
+        result = await conn.fetchval(count_query, *values)
+        return result
 
     finally:
         await conn.close()
@@ -779,5 +327,409 @@ async def clear_rate_limit(api_key: str) -> dict:
             "reset_time": now
         }
 
+    finally:
+        await conn.close()
+
+
+# Django Service Functions
+async def get_brands_list() -> List[str]:
+    """Get all unique brands from cars_standard table"""
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT DISTINCT brand_norm 
+            FROM {TB_CARS_STANDARD}
+            WHERE brand_norm IS NOT NULL
+            ORDER BY brand_norm
+        """
+        rows = await conn.fetch(query)
+        return [row['brand_norm'] for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_models_list(brand: str) -> List[str]:
+    """Get models for specific brand"""
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT DISTINCT model_norm 
+            FROM {TB_CARS_STANDARD}
+            WHERE brand_norm = $1 AND model_norm IS NOT NULL
+            ORDER BY model_norm
+        """
+        rows = await conn.fetch(query, brand)
+        return [row['model_norm'] for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_variants_list(brand: str, model: str) -> List[str]:
+    """Get variants for specific brand and model"""
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT DISTINCT variant_norm 
+            FROM {TB_CARS_STANDARD}
+            WHERE brand_norm = $1 AND model_norm = $2 AND variant_norm IS NOT NULL
+            ORDER BY variant_norm
+        """
+        rows = await conn.fetch(query, brand, model)
+        return [row['variant_norm'] for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_years_list(brand: str, model: str, variant: str) -> List[int]:
+    """Get years for specific brand, model, and variant"""
+    conn = await get_local_db_connection()
+    try:
+        # First get cars_standard_id
+        standard_query = f"""
+            SELECT id FROM {TB_CARS_STANDARD}
+            WHERE brand_norm = $1 AND model_norm = $2 AND variant_norm = $3
+            LIMIT 1
+        """
+        standard_row = await conn.fetchrow(standard_query, brand, model, variant)
+        
+        if not standard_row:
+            return []
+        
+        # Get years from cars_unified
+        years_query = f"""
+            SELECT DISTINCT year 
+            FROM {TB_UNIFIED}
+            WHERE cars_standard_id = $1 AND year IS NOT NULL
+            ORDER BY year DESC
+        """
+        rows = await conn.fetch(years_query, standard_row['id'])
+        return [row['year'] for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_car_records(
+    draw: int = 1,
+    start: int = 0,
+    length: int = 10,
+    search: Optional[str] = None,
+    order_column: Optional[str] = None,
+    order_direction: str = "asc",
+    source_filter: Optional[str] = None,
+    year_filter: Optional[str] = None,
+    price_filter: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get car records for DataTables with pagination and filtering"""
+    conn = await get_local_db_connection()
+    try:
+        # Build base query
+        conditions = ["1=1"]
+        params = []
+        param_index = 1
+        
+        # Search filter
+        if search:
+            search_conditions = [
+                f"c.brand ILIKE ${param_index}",
+                f"c.model ILIKE ${param_index}",
+                f"c.variant ILIKE ${param_index}",
+                f"c.location ILIKE ${param_index}"
+            ]
+            conditions.append(f"({' OR '.join(search_conditions)})")
+            params.append(f"%{search}%")
+            param_index += 1
+        
+        # Source filter
+        if source_filter:
+            conditions.append(f"c.source = ${param_index}")
+            params.append(source_filter)
+            param_index += 1
+        
+        # Year filter  
+        if year_filter:
+            if year_filter == "2024-":
+                conditions.append(f"c.year >= ${param_index}")
+                params.append(2024)
+                param_index += 1
+            elif year_filter == "2020-2023":
+                conditions.append(f"c.year BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([2020, 2023])
+                param_index += 2
+            elif year_filter == "2015-2019":
+                conditions.append(f"c.year BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([2015, 2019])
+                param_index += 2
+            elif year_filter == "2010-2014":
+                conditions.append(f"c.year BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([2010, 2014])
+                param_index += 2
+            elif year_filter == "-2009":
+                conditions.append(f"c.year < ${param_index}")
+                params.append(2010)
+                param_index += 1
+        
+        # Price filter
+        if price_filter:
+            if price_filter == "0-50000":
+                conditions.append(f"c.price BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([0, 50000])
+                param_index += 2
+            elif price_filter == "50000-100000":
+                conditions.append(f"c.price BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([50000, 100000])
+                param_index += 2
+            elif price_filter == "100000-200000":
+                conditions.append(f"c.price BETWEEN ${param_index} AND ${param_index + 1}")
+                params.extend([100000, 200000])
+                param_index += 2
+            elif price_filter == "200000-":
+                conditions.append(f"c.price >= ${param_index}")
+                params.append(200000)
+                param_index += 1
+        
+        where_clause = " AND ".join(conditions)
+        
+        # Order handling
+        order_sql = ""
+        if order_column:
+            order_col_map = {
+                "0": "c.id",
+                "1": "c.brand",
+                "2": "c.model", 
+                "3": "c.variant",
+                "4": "c.year",
+                "5": "c.price",
+                "6": "c.mileage",
+                "7": "c.location",
+                "8": "c.source"
+            }
+            order_col = order_col_map.get(order_column, "c.id")
+            order_sql = f"ORDER BY {order_col} {order_direction.upper()}"
+        else:
+            order_sql = "ORDER BY c.id DESC"
+        
+        # Get total records
+        total_query = f"SELECT COUNT(*) FROM {TB_UNIFIED} c WHERE {where_clause}"
+        total_records = await conn.fetchval(total_query, *params)
+        
+        # Get paginated data
+        data_query = f"""
+            SELECT c.id, c.source, c.brand, c.model, c.variant, c.year, 
+                   c.price, c.mileage, c.location, c.condition, c.listing_url,
+                   c.last_scraped_at, c.information_ads_date
+            FROM {TB_UNIFIED} c
+            WHERE {where_clause}
+            {order_sql}
+            LIMIT ${param_index} OFFSET ${param_index + 1}
+        """
+        params.extend([length, start])
+        
+        rows = await conn.fetch(data_query, *params)
+        
+        # Format data for DataTables (array format expected by template)
+        data = []
+        for row in rows:
+            data.append([
+                row['id'],                                              # 0 - ID
+                row['source'],                                          # 1 - Source
+                row['brand'] or "-",                                   # 2 - Brand
+                row['model'] or "-",                                   # 3 - Model
+                row['variant'] or "-",                                 # 4 - Variant
+                row['year'] or "-",                                    # 5 - Year
+                row['mileage'] if row['mileage'] else "",              # 6 - Mileage (raw number)
+                row['price'] if row['price'] else "",                  # 7 - Price (raw number)
+                row['id']                                              # 8 - Actions (use ID for buttons)
+            ])
+        
+        return {
+            "draw": draw,
+            "recordsTotal": total_records,
+            "recordsFiltered": total_records,
+            "data": data
+        }
+        
+    finally:
+        await conn.close()
+
+
+async def get_car_detail(car_id: int) -> Dict[str, Any]:
+    """Get detailed car information by ID"""
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT c.*, cs.brand_norm, cs.model_norm, cs.variant_norm
+            FROM {TB_UNIFIED} c
+            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            WHERE c.id = $1
+        """
+        row = await conn.fetchrow(query, car_id)
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Car not found")
+        
+        return {
+            'id': row['id'],
+            'source': row['source'],
+            'listing_url': row['listing_url'],
+            'brand': row['brand'],
+            'model': row['model'],
+            'variant': row['variant'],
+            'condition': row['condition'],
+            'year': row['year'],
+            'mileage': row['mileage'],
+            'transmission': row['transmission'],
+            'seat_capacity': row['seat_capacity'],
+            'engine_cc': row['engine_cc'],
+            'fuel_type': row['fuel_type'],
+            'price': row['price'],
+            'location': row['location'],
+            'information_ads': row['information_ads'],
+            'images': row['images'],
+            'status': row['status'],
+            'ads_tag': row['ads_tag'],
+            'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
+            'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
+            'standard_info': {
+                'brand_norm': row['brand_norm'],
+                'model_norm': row['model_norm'], 
+                'variant_norm': row['variant_norm']
+            } if row['brand_norm'] else None
+        }
+    finally:
+        await conn.close()
+
+
+async def get_statistics() -> Dict[str, Any]:
+    """Get dashboard statistics"""
+    conn = await get_local_db_connection()
+    try:
+        # Get basic counts
+        car_count_query = f"SELECT COUNT(*) FROM {TB_UNIFIED}"
+        brand_count_query = f"SELECT COUNT(DISTINCT brand) FROM {TB_UNIFIED}"
+        model_count_query = f"SELECT COUNT(DISTINCT model) FROM {TB_UNIFIED}"
+        
+        car_records = await conn.fetchval(car_count_query)
+        total_brands = await conn.fetchval(brand_count_query)
+        total_models = await conn.fetchval(model_count_query)
+        
+        return {
+            'car_records': car_records,
+            'total_brands': total_brands,
+            'total_models': total_models
+        }
+    finally:
+        await conn.close()
+
+
+async def get_today_data_count() -> int:
+    """Get today's data count based on information_ads_date"""
+    conn = await get_local_db_connection()
+    try:
+        today = date.today()
+        query = f"""
+            SELECT COUNT(*) 
+            FROM {TB_UNIFIED}
+            WHERE information_ads_date = $1
+        """
+        count = await conn.fetchval(query, today)
+        return count
+    finally:
+        await conn.close()
+
+
+async def get_price_estimation(
+    brand: str, 
+    model: str, 
+    variant: str, 
+    year: int, 
+    mileage: Optional[int] = None
+) -> Dict[str, Any]:
+    """Get price estimation for car based on similar records"""
+    conn = await get_local_db_connection()
+    try:
+        # First get cars_standard_id
+        standard_query = f"""
+            SELECT id FROM {TB_CARS_STANDARD}
+            WHERE brand_norm = $1 AND model_norm = $2 AND variant_norm = $3
+            LIMIT 1
+        """
+        standard_row = await conn.fetchrow(standard_query, brand, model, variant)
+        
+        if not standard_row:
+            raise HTTPException(status_code=404, detail="Car variant not found")
+        
+        # Get price data for similar cars
+        price_query = f"""
+            SELECT price, mileage, year
+            FROM {TB_UNIFIED}
+            WHERE cars_standard_id = $1 
+              AND price IS NOT NULL 
+              AND price > 0
+              AND year BETWEEN $2 AND $3
+            ORDER BY year DESC, price ASC
+        """
+        
+        # Search within 2 years range
+        year_min = max(year - 2, 2000)
+        year_max = min(year + 2, datetime.now().year)
+        
+        rows = await conn.fetch(price_query, standard_row['id'], year_min, year_max)
+        
+        if not rows:
+            raise HTTPException(status_code=404, detail="No price data available")
+        
+        prices = [row['price'] for row in rows]
+        
+        # Calculate statistics
+        avg_price = sum(prices) / len(prices)
+        min_price = min(prices)
+        max_price = max(prices)
+        
+        # If mileage provided, try to adjust estimation
+        estimated_price = avg_price
+        if mileage and len(rows) > 5:
+            # Simple mileage adjustment (higher mileage = lower price)
+            avg_mileage = sum(row['mileage'] for row in rows if row['mileage']) / len([r for r in rows if r['mileage']])
+            if avg_mileage:
+                mileage_factor = max(0.8, min(1.2, avg_mileage / mileage))
+                estimated_price = avg_price * mileage_factor
+        
+        return {
+            'brand': brand,
+            'model': model,
+            'variant': variant,
+            'year': year,
+            'estimated_price': round(estimated_price),
+            'price_range': {
+                'min': min_price,
+                'max': max_price,
+                'avg': round(avg_price)
+            },
+            'sample_size': len(prices),
+            'confidence': 'high' if len(prices) >= 10 else 'medium' if len(prices) >= 5 else 'low'
+        }
+        
+    finally:
+        await conn.close()
+
+async def get_brand_car_counts() -> Dict[str, int]:
+    """Get car count for all brands in bulk"""
+    conn = await get_local_db_connection()
+    try:
+        query = f"""
+            SELECT cs.brand_norm, COUNT(c.id) as car_count
+            FROM {TB_CARS_STANDARD} cs
+            LEFT JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm IS NOT NULL
+            GROUP BY cs.brand_norm
+            ORDER BY cs.brand_norm
+        """
+        rows = await conn.fetch(query)
+        
+        result = {}
+        for row in rows:
+            result[row['brand_norm']] = row['car_count']
+        
+        return result
     finally:
         await conn.close()

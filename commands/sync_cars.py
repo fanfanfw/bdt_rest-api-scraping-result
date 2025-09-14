@@ -66,7 +66,7 @@ class DatabaseConfig:
         self.TARGET_DB = {
             'host': os.getenv('DB_HOST', '127.0.0.1'),
             'port': int(os.getenv('DB_PORT', 5432)),
-            'database': os.getenv('DB_NAME', 'db_carmarketprice_new_2'),
+            'database': os.getenv('DB_NAME', 'db_test'),
             'user': os.getenv('DB_USER', 'fanfan'),
             'password': os.getenv('DB_PASSWORD', 'cenanun')
         }

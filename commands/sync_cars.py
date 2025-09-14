@@ -40,13 +40,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import functions from fill scripts
+fill_all_category_id = None
+fill_all_cars_standard_id = None
+
 try:
     from fill_cars_category_id import fill_all_category_id
+    logger.info("✅ fill_cars_category_id imported successfully")
+except ImportError:
+    logger.warning("⚠️ fill_cars_category_id not available (optional)")
+
+try:
     from fill_cars_standard_id import fill_all_cars_standard_id
-except ImportError as e:
-    logger.warning(f"⚠️ Could not import fill functions: {e}")
-    fill_all_category_id = None
-    fill_all_cars_standard_id = None
+    logger.info("✅ fill_cars_standard_id imported successfully")
+except ImportError:
+    logger.warning("⚠️ fill_cars_standard_id not available (optional)")
 
 
 class DatabaseConfig:

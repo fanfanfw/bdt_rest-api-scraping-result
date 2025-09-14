@@ -11,7 +11,6 @@ Usage:
 """
 
 import os
-import django
 import sys
 from datetime import datetime
 import logging
@@ -26,13 +25,6 @@ load_dotenv(override=True)
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-# Setup Django environment using environment variable
-django_settings = os.getenv('DJANGO_SETTINGS_MODULE', 'carmarket.settings')
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', django_settings)
-django.setup()
-
-from django.db import connection
-from main.models import CarUnified
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -125,27 +117,44 @@ def fill_cars_standard_id_for_source(source):
     updated_count = 0
     failed_count = 0
     failed_records = []
-    
+
+    # Database configuration
+    db_config = {
+        'host': os.getenv('DB_HOST', '127.0.0.1'),
+        'port': int(os.getenv('DB_PORT', 5432)),
+        'database': os.getenv('DB_NAME', 'db_test'),
+        'user': os.getenv('DB_USER', 'fanfan'),
+        'password': os.getenv('DB_PASSWORD', 'cenanun')
+    }
+
+    conn = None
     try:
         logger.info(f"🔍 Mencari record dengan cars_standard_id NULL untuk source {source}...")
-        
+
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
         # Ambil semua record yang cars_standard_id nya NULL
-        null_records = CarUnified.objects.filter(
-            source=source,
-            cars_standard_id__isnull=True,
-            brand__isnull=False,
-            model__isnull=False,
-            variant__isnull=False
-        ).values('id', 'listing_url', 'brand', 'model_group', 'model', 'variant')
-        
+        cur.execute("""
+            SELECT id, listing_url, brand, model_group, model, variant
+            FROM cars_unified
+            WHERE source = %s
+            AND cars_standard_id IS NULL
+            AND brand IS NOT NULL
+            AND model IS NOT NULL
+            AND variant IS NOT NULL
+        """, (source,))
+
+        null_records = cur.fetchall()
+
         logger.info(f"📊 Ditemukan {len(null_records)} record dengan cars_standard_id NULL untuk {source}")
-        
+
         if len(null_records) == 0:
             logger.info(f"✅ Tidak ada record yang perlu diupdate untuk {source}")
             return updated_count, failed_count, failed_records
-        
+
         # Progress bar untuk pemrosesan record
-        with tqdm(total=len(null_records), desc=f"🔄 {source}", 
+        with tqdm(total=len(null_records), desc=f"🔄 {source}",
                   unit="record", ncols=100, colour='green') as pbar:
             for record in null_records:
                 record_id = record['id']
@@ -154,15 +163,17 @@ def fill_cars_standard_id_for_source(source):
                 model_group = record['model_group']
                 model = record['model']
                 variant = record['variant']
-                
+
                 # Cari cars_standard_id
                 cars_standard_id = find_cars_standard_id(brand, model_group, model, variant)
-                
+
                 if cars_standard_id:
                     # Update cars_standard_id
-                    CarUnified.objects.filter(id=record_id).update(
-                        cars_standard_id=cars_standard_id
-                    )
+                    cur.execute("""
+                        UPDATE cars_unified
+                        SET cars_standard_id = %s
+                        WHERE id = %s
+                    """, (cars_standard_id, record_id))
                     updated_count += 1
                     pbar.set_postfix({"✅ Updated": updated_count, "❌ Failed": failed_count})
                 else:
@@ -177,18 +188,26 @@ def fill_cars_standard_id_for_source(source):
                         'source': source
                     })
                     pbar.set_postfix({"✅ Updated": updated_count, "❌ Failed": failed_count})
-                
+
                 pbar.update(1)
-                
+
+        # Commit changes
+        conn.commit()
+
         logger.info(f"✅ {source}: Selesai memproses {len(null_records)} record")
         logger.info(f"   📈 Berhasil update: {updated_count}")
         logger.info(f"   ❌ Gagal match: {failed_count}")
-        
+
         return updated_count, failed_count, failed_records
-        
+
     except Exception as e:
         logger.error(f"❌ Error saat memproses {source}: {str(e)}")
+        if conn:
+            conn.rollback()
         raise
+    finally:
+        if conn:
+            conn.close()
 
 
 def fill_all_cars_standard_id():
@@ -197,8 +216,8 @@ def fill_all_cars_standard_id():
     """
     print("📋 Fill Cars Standard ID")
     print("-" * 50)
-    print(f"🔧 Django Settings: {os.getenv('DJANGO_SETTINGS_MODULE', 'carmarket.settings')}")
-    print(f"🗄️ Database: {os.getenv('DB_NAME', 'default')}")
+    print(f"🗄️ Database: {os.getenv('DB_NAME', 'db_test')}")
+    print(f"🔧 Host: {os.getenv('DB_HOST', '127.0.0.1')}:{os.getenv('DB_PORT', 5432)}")
     print("")
     
     logger.info("🚀 Memulai proses pengisian cars_standard_id untuk record yang NULL...")

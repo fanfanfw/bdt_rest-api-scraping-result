@@ -658,22 +658,18 @@ async def get_price_estimation(
         if not standard_row:
             raise HTTPException(status_code=404, detail="Car variant not found")
         
-        # Get price data for similar cars
+        # Get price data for exact year match
         price_query = f"""
             SELECT price, mileage, year
             FROM {TB_UNIFIED}
-            WHERE cars_standard_id = $1 
-              AND price IS NOT NULL 
+            WHERE cars_standard_id = $1
+              AND price IS NOT NULL
               AND price > 0
-              AND year BETWEEN $2 AND $3
-            ORDER BY year DESC, price ASC
+              AND year = $2
+            ORDER BY price ASC
         """
-        
-        # Search within 2 years range
-        year_min = max(year - 2, 2000)
-        year_max = min(year + 2, datetime.now().year)
-        
-        rows = await conn.fetch(price_query, standard_row['id'], year_min, year_max)
+
+        rows = await conn.fetch(price_query, standard_row['id'], year)
         
         if not rows:
             raise HTTPException(status_code=404, detail="No price data available")
@@ -687,13 +683,19 @@ async def get_price_estimation(
         
         # If mileage provided, try to adjust estimation
         estimated_price = avg_price
-        if mileage and len(rows) > 5:
+        if mileage and len(rows) > 3:  # Lower threshold since we're using exact year
             # Simple mileage adjustment (higher mileage = lower price)
-            avg_mileage = sum(row['mileage'] for row in rows if row['mileage']) / len([r for r in rows if r['mileage']])
-            if avg_mileage:
-                mileage_factor = max(0.8, min(1.2, avg_mileage / mileage))
-                estimated_price = avg_price * mileage_factor
+            mileages_with_data = [row['mileage'] for row in rows if row['mileage']]
+            if mileages_with_data:
+                avg_mileage = sum(mileages_with_data) / len(mileages_with_data)
+                if avg_mileage > 0:
+                    mileage_factor = max(0.8, min(1.2, avg_mileage / mileage))
+                    estimated_price = avg_price * mileage_factor
         
+        # Calculate average mileage from the data
+        mileages_with_data = [row['mileage'] for row in rows if row['mileage']]
+        avg_mileage = sum(mileages_with_data) / len(mileages_with_data) if mileages_with_data else 100000
+
         return {
             'brand': brand,
             'model': model,
@@ -706,7 +708,12 @@ async def get_price_estimation(
                 'avg': round(avg_price)
             },
             'sample_size': len(prices),
-            'confidence': 'high' if len(prices) >= 10 else 'medium' if len(prices) >= 5 else 'low'
+            'confidence': 'high' if len(prices) >= 5 else 'medium' if len(prices) >= 3 else 'low',
+            'statistics': {
+                'average_price': round(avg_price),
+                'average_mileage': round(avg_mileage),
+                'data_count': len(prices)
+            }
         }
         
     finally:

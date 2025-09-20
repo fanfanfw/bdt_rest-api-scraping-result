@@ -20,3 +20,5 @@ convert_date_carlistmy/
 convert_date_mudahmy/
 
 failed_cars_standard_id_*.csv
+
+logs/

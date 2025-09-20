@@ -37,10 +37,10 @@ def find_cars_standard_id(brand, model_group, model, variant):
     dengan logika matching yang sesuai dengan project ini
     """
     cars_standard_id = None
-    
-    if not brand or not model or not variant:
+
+    if not brand or not model_group or not model or not variant:
         return None
-    
+
     try:
         # Use direct database connection instead of Django ORM
         db_config = {
@@ -50,44 +50,41 @@ def find_cars_standard_id(brand, model_group, model, variant):
             'user': os.getenv('DB_USER', 'fanfan'),
             'password': os.getenv('DB_PASSWORD', 'cenanun')
         }
-        
+
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Step 1: Cari berdasarkan brand_norm (case insensitive)
         cur.execute("""
             SELECT id, brand_norm, model_group_norm, model_norm, variant_norm,
                    model_group_raw, model_raw, variant_raw, variant_raw2
-            FROM cars_standard 
+            FROM cars_standard
             WHERE UPPER(brand_norm) = UPPER(%s)
         """, (brand.strip(),))
-        
+
         brand_matches = cur.fetchall()
-        
+
         for candidate in brand_matches:
             # Step 2: Cek model_group - prioritas model_group_norm dulu, lalu model_group_raw
             model_group_match = False
-            if model_group and model_group.strip():  # Jika ada model_group dari input
-                if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group.strip().upper():
-                    model_group_match = True
-                elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group.strip().upper():
-                    model_group_match = True
-            else:  # Jika tidak ada model_group dari input, skip pengecekan model_group
+            if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group.strip().upper():
                 model_group_match = True
-            
+            elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group.strip().upper():
+                model_group_match = True
+
             if not model_group_match:
                 continue
-            
+
             # Step 3: Cek model - prioritas model_norm dulu, lalu model_raw
             model_match = False
             if candidate['model_norm'] and candidate['model_norm'].strip().upper() == model.strip().upper():
                 model_match = True
             elif candidate['model_raw'] and candidate['model_raw'].strip().upper() == model.strip().upper():
                 model_match = True
-            
+
             if not model_match:
                 continue
-            
+
             # Step 4: Cek variant - prioritas variant_norm, lalu variant_raw, lalu variant_raw2
             variant_match = False
             if candidate['variant_norm'] and candidate['variant_norm'].strip().upper() == variant.strip().upper():
@@ -96,27 +93,29 @@ def find_cars_standard_id(brand, model_group, model, variant):
                 variant_match = True
             elif candidate['variant_raw2'] and candidate['variant_raw2'].strip().upper() == variant.strip().upper():
                 variant_match = True
-            
+
             if variant_match:
                 cars_standard_id = candidate['id']
                 break  # Keluar dari loop jika sudah ditemukan match
-        
+
         conn.close()
-                
+
     except Exception as e:
         logger.error(f"Error dalam pencarian cars_standard_id: {e}")
         return None
-    
+
     return cars_standard_id
 
 
-def fill_cars_standard_id_for_source(source):
+def fill_cars_standard_id_for_source(source, batch_size=500):
     """
     Mengisi cars_standard_id yang NULL untuk source tertentu
+    dengan batch commit untuk menyimpan progress secara berkala
     """
     updated_count = 0
     failed_count = 0
     failed_records = []
+    batch_count = 0
 
     # Database configuration
     db_config = {
@@ -148,6 +147,7 @@ def fill_cars_standard_id_for_source(source):
         null_records = cur.fetchall()
 
         logger.info(f"📊 Ditemukan {len(null_records)} record dengan cars_standard_id NULL untuk {source}")
+        logger.info(f"🔄 Batch size: {batch_size} (data akan di-commit setiap {batch_size} record)")
 
         if len(null_records) == 0:
             logger.info(f"✅ Tidak ada record yang perlu diupdate untuk {source}")
@@ -189,10 +189,19 @@ def fill_cars_standard_id_for_source(source):
                     })
                     pbar.set_postfix({"✅ Updated": updated_count, "❌ Failed": failed_count})
 
+                batch_count += 1
                 pbar.update(1)
 
-        # Commit changes
-        conn.commit()
+                # Commit setiap batch_size record untuk menyimpan progress
+                if batch_count >= batch_size:
+                    conn.commit()
+                    logger.debug(f"💾 Batch commit: {batch_count} record telah diproses dan disimpan")
+                    batch_count = 0
+
+        # Commit sisa record yang belum di-commit
+        if batch_count > 0:
+            conn.commit()
+            logger.debug(f"💾 Final commit: {batch_count} record terakhir telah disimpan")
 
         logger.info(f"✅ {source}: Selesai memproses {len(null_records)} record")
         logger.info(f"   📈 Berhasil update: {updated_count}")
@@ -258,15 +267,15 @@ def fill_all_cars_standard_id():
         # Process CarlistMY
         logger.info("=" * 60)
         logger.info("📋 Memproses source CarlistMY...")
-        updated_carlistmy, failed_carlistmy, failed_records_carlistmy = fill_cars_standard_id_for_source('carlistmy')
+        updated_carlistmy, failed_carlistmy, failed_records_carlistmy = fill_cars_standard_id_for_source('carlistmy', batch_size=500)
         total_updated += updated_carlistmy
         total_failed += failed_carlistmy
         all_failed_records.extend(failed_records_carlistmy)
-        
+
         # Process MudahMY
         logger.info("=" * 60)
         logger.info("📋 Memproses source MudahMY...")
-        updated_mudahmy, failed_mudahmy, failed_records_mudahmy = fill_cars_standard_id_for_source('mudahmy')
+        updated_mudahmy, failed_mudahmy, failed_records_mudahmy = fill_cars_standard_id_for_source('mudahmy', batch_size=500)
         total_updated += updated_mudahmy
         total_failed += failed_mudahmy
         all_failed_records.extend(failed_records_mudahmy)

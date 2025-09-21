@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Fill Cars Standard ID Script
 ============================
@@ -31,10 +30,11 @@ from psycopg2.extras import RealDictCursor
 logger = logging.getLogger(__name__)
 
 
-def find_cars_standard_id(brand, model_group, model, variant):
+def find_cars_standard_id(cur, brand, model_group, model, variant):
     """
     Mencari cars_standard_id berdasarkan brand, model_group, model, variant
     dengan logika matching yang sesuai dengan project ini
+    Menggunakan cursor yang sudah ada untuk menghindari multiple connections
     """
     cars_standard_id = None
 
@@ -42,22 +42,10 @@ def find_cars_standard_id(brand, model_group, model, variant):
         return None
 
     try:
-        # Use direct database connection instead of Django ORM
-        db_config = {
-            'host': os.getenv('DB_HOST', '127.0.0.1'),
-            'port': int(os.getenv('DB_PORT', 5432)),
-            'database': os.getenv('DB_NAME', 'db_test'),
-            'user': os.getenv('DB_USER', 'fanfan'),
-            'password': os.getenv('DB_PASSWORD', 'cenanun')
-        }
-
-        conn = psycopg2.connect(**db_config)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
         # Step 1: Cari berdasarkan brand_norm (case insensitive)
         cur.execute("""
             SELECT id, brand_norm, model_group_norm, model_norm, variant_norm,
-                   model_group_raw, model_raw, variant_raw, variant_raw2
+                   model_group_raw, model_raw, model_raw2, variant_raw, variant_raw2
             FROM cars_standard
             WHERE UPPER(brand_norm) = UPPER(%s)
         """, (brand.strip(),))
@@ -81,6 +69,8 @@ def find_cars_standard_id(brand, model_group, model, variant):
                 model_match = True
             elif candidate['model_raw'] and candidate['model_raw'].strip().upper() == model.strip().upper():
                 model_match = True
+            elif candidate['model_raw2'] and candidate['model_raw2'].strip().upper() == variant.strip().upper():
+                variant_match = True
 
             if not model_match:
                 continue
@@ -98,8 +88,6 @@ def find_cars_standard_id(brand, model_group, model, variant):
                 cars_standard_id = candidate['id']
                 break  # Keluar dari loop jika sudah ditemukan match
 
-        conn.close()
-
     except Exception as e:
         logger.error(f"Error dalam pencarian cars_standard_id: {e}")
         return None
@@ -111,6 +99,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
     """
     Mengisi cars_standard_id yang NULL untuk source tertentu
     dengan batch commit untuk menyimpan progress secara berkala
+    Optimized version: menggunakan satu koneksi dan cursor yang persistent
     """
     updated_count = 0
     failed_count = 0
@@ -133,7 +122,22 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Ambil semua record yang cars_standard_id nya NULL
+        # Set connection settings untuk optimasi
+        conn.autocommit = False  # Explicit transaction control
+        cur.execute("SET work_mem = '256MB'")  # Increase working memory for sorting
+
+        # Create index untuk mempercepat pencarian di cars_standard jika belum ada
+        try:
+            cur.execute("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cars_standard_brand_norm_upper
+                ON cars_standard (UPPER(brand_norm))
+            """)
+            conn.commit()
+        except Exception as e:
+            logger.debug(f"Index mungkin sudah ada: {e}")
+            conn.rollback()
+
+        # Ambil semua record yang cars_standard_id nya NULL dengan LIMIT untuk processing batch
         cur.execute("""
             SELECT id, listing_url, brand, model_group, model, variant
             FROM cars_unified
@@ -142,6 +146,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
             AND brand IS NOT NULL
             AND model IS NOT NULL
             AND variant IS NOT NULL
+            ORDER BY id
         """, (source,))
 
         null_records = cur.fetchall()
@@ -153,9 +158,19 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
             logger.info(f"✅ Tidak ada record yang perlu diupdate untuk {source}")
             return updated_count, failed_count, failed_records
 
+        # Prepare update statement untuk optimasi
+        update_stmt = """
+            UPDATE cars_unified
+            SET cars_standard_id = %s
+            WHERE id = %s
+        """
+
         # Progress bar untuk pemrosesan record
         with tqdm(total=len(null_records), desc=f"🔄 {source}",
                   unit="record", ncols=100, colour='green') as pbar:
+
+            update_batch = []  # Batch updates
+
             for record in null_records:
                 record_id = record['id']
                 listing_url = record['listing_url']
@@ -164,16 +179,12 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
                 model = record['model']
                 variant = record['variant']
 
-                # Cari cars_standard_id
-                cars_standard_id = find_cars_standard_id(brand, model_group, model, variant)
+                # Cari cars_standard_id menggunakan cursor yang sudah ada
+                cars_standard_id = find_cars_standard_id(cur, brand, model_group, model, variant)
 
                 if cars_standard_id:
-                    # Update cars_standard_id
-                    cur.execute("""
-                        UPDATE cars_unified
-                        SET cars_standard_id = %s
-                        WHERE id = %s
-                    """, (cars_standard_id, record_id))
+                    # Tambahkan ke batch update
+                    update_batch.append((cars_standard_id, record_id))
                     updated_count += 1
                     pbar.set_postfix({"✅ Updated": updated_count, "❌ Failed": failed_count})
                 else:
@@ -192,13 +203,18 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
                 batch_count += 1
                 pbar.update(1)
 
-                # Commit setiap batch_size record untuk menyimpan progress
+                # Execute batch updates dan commit setiap batch_size record
                 if batch_count >= batch_size:
+                    if update_batch:
+                        cur.executemany(update_stmt, update_batch)
+                        update_batch = []
                     conn.commit()
                     logger.debug(f"💾 Batch commit: {batch_count} record telah diproses dan disimpan")
                     batch_count = 0
 
-        # Commit sisa record yang belum di-commit
+        # Execute sisa batch updates dan commit
+        if update_batch:
+            cur.executemany(update_stmt, update_batch)
         if batch_count > 0:
             conn.commit()
             logger.debug(f"💾 Final commit: {batch_count} record terakhir telah disimpan")

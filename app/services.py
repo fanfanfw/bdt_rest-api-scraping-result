@@ -93,7 +93,7 @@ async def get_brand_distribution_carlistmy() -> List[BrandCount]:
         query = f"""
             SELECT brand, COUNT(*) AS total
             FROM {TB_UNIFIED}
-            WHERE brand IS NOT NULL AND source = 'carlistmy'
+            WHERE brand IS NOT NULL AND source = 'carlistmy' AND status IN ('active', 'sold')
             GROUP BY brand
             ORDER BY total DESC
         """
@@ -154,8 +154,13 @@ async def get_price_vs_mileage_filtered(
             values.append(source)
             param_index += 1
 
+        # Always filter by status (active or sold only)
+        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
+        values.extend(['active', 'sold'])
+        param_index += 2
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+
         # Create query for unified table
         limit_param = param_index
         offset_param = param_index + 1
@@ -280,6 +285,11 @@ async def get_price_vs_mileage_total_count(
             values.append(source)
             param_index += 1
 
+        # Always filter by status (active or sold only)
+        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
+        values.extend(['active', 'sold'])
+        param_index += 2
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         count_query = f"""
@@ -333,14 +343,15 @@ async def clear_rate_limit(api_key: str) -> dict:
 
 # Django Service Functions
 async def get_brands_list() -> List[str]:
-    """Get all unique brands from cars_standard table"""
+    """Get all unique brands from cars_standard table where cars exist with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
-            SELECT DISTINCT brand_norm 
-            FROM {TB_CARS_STANDARD}
-            WHERE brand_norm IS NOT NULL
-            ORDER BY brand_norm
+            SELECT DISTINCT cs.brand_norm
+            FROM {TB_CARS_STANDARD} cs
+            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            ORDER BY cs.brand_norm
         """
         rows = await conn.fetch(query)
         return [row['brand_norm'] for row in rows]
@@ -349,14 +360,15 @@ async def get_brands_list() -> List[str]:
 
 
 async def get_models_list(brand: str) -> List[str]:
-    """Get models for specific brand"""
+    """Get models for specific brand where cars exist with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
-            SELECT DISTINCT model_norm 
-            FROM {TB_CARS_STANDARD}
-            WHERE brand_norm = $1 AND model_norm IS NOT NULL
-            ORDER BY model_norm
+            SELECT DISTINCT cs.model_norm
+            FROM {TB_CARS_STANDARD} cs
+            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm = $1 AND cs.model_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            ORDER BY cs.model_norm
         """
         rows = await conn.fetch(query, brand)
         return [row['model_norm'] for row in rows]
@@ -365,14 +377,15 @@ async def get_models_list(brand: str) -> List[str]:
 
 
 async def get_variants_list(brand: str, model: str) -> List[str]:
-    """Get variants for specific brand and model"""
+    """Get variants for specific brand and model where cars exist with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
-            SELECT DISTINCT variant_norm 
-            FROM {TB_CARS_STANDARD}
-            WHERE brand_norm = $1 AND model_norm = $2 AND variant_norm IS NOT NULL
-            ORDER BY variant_norm
+            SELECT DISTINCT cs.variant_norm
+            FROM {TB_CARS_STANDARD} cs
+            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm = $1 AND cs.model_norm = $2 AND cs.variant_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            ORDER BY cs.variant_norm
         """
         rows = await conn.fetch(query, brand, model)
         return [row['variant_norm'] for row in rows]
@@ -397,9 +410,9 @@ async def get_years_list(brand: str, model: str, variant: str) -> List[int]:
         
         # Get years from cars_unified
         years_query = f"""
-            SELECT DISTINCT year 
+            SELECT DISTINCT year
             FROM {TB_UNIFIED}
-            WHERE cars_standard_id = $1 AND year IS NOT NULL
+            WHERE cars_standard_id = $1 AND year IS NOT NULL AND status IN ('active', 'sold')
             ORDER BY year DESC
         """
         rows = await conn.fetch(years_query, standard_row['id'])
@@ -486,7 +499,12 @@ async def get_car_records(
                 conditions.append(f"c.price >= ${param_index}")
                 params.append(200000)
                 param_index += 1
-        
+
+        # Always filter by status (active or sold only)
+        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
+        params.extend(['active', 'sold'])
+        param_index += 2
+
         where_clause = " AND ".join(conditions)
         
         # Order handling
@@ -604,9 +622,19 @@ async def get_statistics() -> Dict[str, Any]:
     conn = await get_local_db_connection()
     try:
         # Get basic counts
-        car_count_query = f"SELECT COUNT(*) FROM {TB_UNIFIED}"
-        brand_count_query = f"SELECT COUNT(DISTINCT brand) FROM {TB_UNIFIED}"
-        model_count_query = f"SELECT COUNT(DISTINCT model) FROM {TB_UNIFIED}"
+        car_count_query = f"SELECT COUNT(*) FROM {TB_UNIFIED} WHERE status IN ('active', 'sold')"
+        brand_count_query = f"""
+            SELECT COUNT(DISTINCT cs.brand_norm)
+            FROM {TB_CARS_STANDARD} cs
+            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm IS NOT NULL AND c.status IN ('active', 'sold')
+        """
+        model_count_query = f"""
+            SELECT COUNT(DISTINCT cs.model_norm)
+            FROM {TB_CARS_STANDARD} cs
+            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            WHERE cs.model_norm IS NOT NULL AND c.status IN ('active', 'sold')
+        """
         
         car_records = await conn.fetchval(car_count_query)
         total_brands = await conn.fetchval(brand_count_query)
@@ -627,9 +655,9 @@ async def get_today_data_count() -> int:
     try:
         today = date.today()
         query = f"""
-            SELECT COUNT(*) 
+            SELECT COUNT(*)
             FROM {TB_UNIFIED}
-            WHERE information_ads_date = $1
+            WHERE information_ads_date = $1 AND status IN ('active', 'sold')
         """
         count = await conn.fetchval(query, today)
         return count
@@ -666,6 +694,7 @@ async def get_price_estimation(
               AND price IS NOT NULL
               AND price > 0
               AND year = $2
+              AND status IN ('active', 'sold')
             ORDER BY price ASC
         """
 
@@ -726,7 +755,7 @@ async def get_brand_car_counts() -> Dict[str, int]:
         query = f"""
             SELECT cs.brand_norm, COUNT(c.id) as car_count
             FROM {TB_CARS_STANDARD} cs
-            LEFT JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
+            LEFT JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
             WHERE cs.brand_norm IS NOT NULL
             GROUP BY cs.brand_norm
             ORDER BY cs.brand_norm

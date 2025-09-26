@@ -226,11 +226,29 @@ class CarDataSyncService:
                 invalid_count += 1
                 logger.warning(f"⚠️ Skipped record - missing condition: {data.get('source', 'unknown')} - {data.get('listing_url', 'no url')}")
                 continue
-                
+
+            # Check price is not 0 or null
+            if not data.get('price') or data.get('price') == 0:
+                invalid_count += 1
+                logger.warning(f"⚠️ Skipped record - price is 0 or null: {data.get('source', 'unknown')} - {data.get('listing_url', 'no url')}")
+                continue
+
+            # Check mileage is not 0 or null
+            if not data.get('mileage') or data.get('mileage') == 0:
+                invalid_count += 1
+                logger.warning(f"⚠️ Skipped record - mileage is 0 or null: {data.get('source', 'unknown')} - {data.get('listing_url', 'no url')}")
+                continue
+
+            # Check year is not 0 or null
+            if not data.get('year') or data.get('year') == 0:
+                invalid_count += 1
+                logger.warning(f"⚠️ Skipped record - year is 0 or null: {data.get('source', 'unknown')} - {data.get('listing_url', 'no url')}")
+                continue
+
             valid_data.append(data)
         
         if invalid_count > 0:
-            logger.warning(f"❌ {invalid_count} records skipped due to missing required fields (brand/model/condition)")
+            logger.warning(f"❌ {invalid_count} records skipped due to missing required fields (brand/model/condition/price/mileage/year)")
         
         if not valid_data:
             logger.warning("❌ No valid records to process")
@@ -558,7 +576,7 @@ def display_summary(summary: Dict[str, Any]):
     print(f"   Inserted: {cars['inserted']}")
     print(f"   Updated: {cars['updated']}")
     if cars.get('skipped', 0) > 0:
-        print(f"   Skipped: {cars['skipped']} (missing brand/model/condition)")
+        print(f"   Skipped: {cars['skipped']} (missing brand/model/condition/price/mileage/year)")
     
     # Fill results
     fill = summary.get('fill_results', {})

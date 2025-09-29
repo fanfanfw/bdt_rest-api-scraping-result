@@ -12,6 +12,7 @@ Usage:
 
 import os
 import sys
+import argparse
 import psycopg2
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -369,26 +370,37 @@ class DataArchiver:
         finally:
             self.close_connection()
 
-if __name__ == "__main__":
+def main():
+    parser = argparse.ArgumentParser(description='Data Archiver for DB_TEST')
+    parser.add_argument('--months', type=int, default=6, help='Jumlah bulan data untuk diarsipkan (default: 6)')
+    parser.add_argument('--auto', action='store_true', help='Jalankan otomatis tanpa interaksi user')
+    parser.add_argument('--dry-run', action='store_true', help='Hanya simulasi tanpa benar-benar mengarsipkan')
+    parser.add_argument('--stats-only', action='store_true', help='Tampilkan statistik saja')
+
+    args = parser.parse_args()
+
     archiver = DataArchiver()
 
-    # Tampilkan statistik sebelum archiving
+    # Tampilkan statistik
     logging.info("📊 Statistik sebelum archiving:")
     archiver.get_current_statistics()
     archiver.get_archive_statistics()
 
-    # Dry run dulu untuk melihat berapa yang akan diarsip
-    logging.info("\n" + "="*60)
-    archiver.dry_run_archive(months=6)
+    if args.stats_only:
+        return
 
-    # Konfirmasi dari user
+    # Dry run untuk melihat berapa yang akan diarsip
     logging.info("\n" + "="*60)
-    proceed = input("Apakah Anda ingin melanjutkan proses archiving? (y/N): ").lower().strip()
+    archiver.dry_run_archive(months=args.months)
 
-    if proceed in ['y', 'yes']:
-        # Jalankan proses archiving untuk data > 6 bulan
+    if args.dry_run:
+        return
+
+    # Proses archiving
+    if args.auto:
         logging.info("\n" + "="*60)
-        archiver.run_archive_process(months=6)
+        logging.info("🚀 Mode otomatis - menjalankan proses archiving...")
+        archiver.run_archive_process(months=args.months)
 
         # Tampilkan statistik setelah archiving
         logging.info("\n" + "="*60)
@@ -396,4 +408,21 @@ if __name__ == "__main__":
         archiver.get_current_statistics()
         archiver.get_archive_statistics()
     else:
-        logging.info("❌ Proses archiving dibatalkan")
+        # Konfirmasi dari user
+        logging.info("\n" + "="*60)
+        proceed = input("Apakah Anda ingin melanjutkan proses archiving? (y/N): ").lower().strip()
+
+        if proceed in ['y', 'yes']:
+            logging.info("\n" + "="*60)
+            archiver.run_archive_process(months=args.months)
+
+            # Tampilkan statistik setelah archiving
+            logging.info("\n" + "="*60)
+            logging.info("📊 Statistik setelah archiving:")
+            archiver.get_current_statistics()
+            archiver.get_archive_statistics()
+        else:
+            logging.info("❌ Proses archiving dibatalkan")
+
+if __name__ == "__main__":
+    main()

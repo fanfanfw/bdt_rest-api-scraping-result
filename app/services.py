@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
+TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
 
 def convert_price(price_str):
     if isinstance(price_str, int):
@@ -343,14 +344,22 @@ async def clear_rate_limit(api_key: str) -> dict:
 
 # Django Service Functions
 async def get_brands_list() -> List[str]:
-    """Get all unique brands from cars_standard table where cars exist with active/sold status"""
+    """Get all unique brands from cars_standard where cars exist in either cars_unified or carsome with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
             SELECT DISTINCT cs.brand_norm
             FROM {TB_CARS_STANDARD} cs
-            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
-            WHERE cs.brand_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            WHERE cs.brand_norm IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {TB_UNIFIED} c
+                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
+
+                  UNION ALL
+
+                  SELECT 1 FROM {TB_CARSOME} co
+                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
+              )
             ORDER BY cs.brand_norm
         """
         rows = await conn.fetch(query)
@@ -360,14 +369,23 @@ async def get_brands_list() -> List[str]:
 
 
 async def get_models_list(brand: str) -> List[str]:
-    """Get models for specific brand where cars exist with active/sold status"""
+    """Get models for specific brand where cars exist in either cars_unified or carsome with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
             SELECT DISTINCT cs.model_norm
             FROM {TB_CARS_STANDARD} cs
-            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
-            WHERE cs.brand_norm = $1 AND cs.model_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            WHERE cs.brand_norm = $1
+              AND cs.model_norm IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {TB_UNIFIED} c
+                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
+
+                  UNION ALL
+
+                  SELECT 1 FROM {TB_CARSOME} co
+                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
+              )
             ORDER BY cs.model_norm
         """
         rows = await conn.fetch(query, brand)
@@ -377,14 +395,24 @@ async def get_models_list(brand: str) -> List[str]:
 
 
 async def get_variants_list(brand: str, model: str) -> List[str]:
-    """Get variants for specific brand and model where cars exist with active/sold status"""
+    """Get variants for specific brand and model where cars exist in either cars_unified or carsome with active/sold status"""
     conn = await get_local_db_connection()
     try:
         query = f"""
             SELECT DISTINCT cs.variant_norm
             FROM {TB_CARS_STANDARD} cs
-            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
-            WHERE cs.brand_norm = $1 AND cs.model_norm = $2 AND cs.variant_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            WHERE cs.brand_norm = $1
+              AND cs.model_norm = $2
+              AND cs.variant_norm IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {TB_UNIFIED} c
+                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
+
+                  UNION ALL
+
+                  SELECT 1 FROM {TB_CARSOME} co
+                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
+              )
             ORDER BY cs.variant_norm
         """
         rows = await conn.fetch(query, brand, model)
@@ -686,15 +714,26 @@ async def get_price_estimation(
         if not standard_row:
             raise HTTPException(status_code=404, detail="Car variant not found")
         
-        # Get price data for exact year match
+        # Get price data for exact year match from both sources
         price_query = f"""
-            SELECT price, mileage, year
+            SELECT price, mileage, year, '{TB_UNIFIED}' as source
             FROM {TB_UNIFIED}
             WHERE cars_standard_id = $1
               AND price IS NOT NULL
               AND price > 0
               AND year = $2
               AND status IN ('active', 'sold')
+
+            UNION ALL
+
+            SELECT price, mileage, year, '{TB_CARSOME}' as source
+            FROM {TB_CARSOME}
+            WHERE cars_standard_id = $1
+              AND price IS NOT NULL
+              AND price > 0
+              AND year = $2
+              AND status IN ('active', 'sold')
+
             ORDER BY price ASC
         """
 

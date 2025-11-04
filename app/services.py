@@ -348,18 +348,21 @@ async def get_brands_list() -> List[str]:
     conn = await get_local_db_connection()
     try:
         query = f"""
+            WITH combined AS (
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_UNIFIED}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+
+                UNION
+
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_CARSOME}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+            )
             SELECT DISTINCT cs.brand_norm
-            FROM {TB_CARS_STANDARD} cs
+            FROM combined c
+            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
             WHERE cs.brand_norm IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM {TB_UNIFIED} c
-                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
-
-                  UNION ALL
-
-                  SELECT 1 FROM {TB_CARSOME} co
-                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
-              )
             ORDER BY cs.brand_norm
         """
         rows = await conn.fetch(query)
@@ -373,19 +376,22 @@ async def get_models_list(brand: str) -> List[str]:
     conn = await get_local_db_connection()
     try:
         query = f"""
+            WITH combined AS (
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_UNIFIED}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+
+                UNION
+
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_CARSOME}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+            )
             SELECT DISTINCT cs.model_norm
-            FROM {TB_CARS_STANDARD} cs
+            FROM combined c
+            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
             WHERE cs.brand_norm = $1
               AND cs.model_norm IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM {TB_UNIFIED} c
-                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
-
-                  UNION ALL
-
-                  SELECT 1 FROM {TB_CARSOME} co
-                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
-              )
             ORDER BY cs.model_norm
         """
         rows = await conn.fetch(query, brand)
@@ -399,20 +405,23 @@ async def get_variants_list(brand: str, model: str) -> List[str]:
     conn = await get_local_db_connection()
     try:
         query = f"""
+            WITH combined AS (
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_UNIFIED}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+
+                UNION
+
+                SELECT DISTINCT cars_standard_id
+                FROM {TB_CARSOME}
+                WHERE status IN ('active', 'sold') AND cars_standard_id IS NOT NULL
+            )
             SELECT DISTINCT cs.variant_norm
-            FROM {TB_CARS_STANDARD} cs
+            FROM combined c
+            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
             WHERE cs.brand_norm = $1
               AND cs.model_norm = $2
               AND cs.variant_norm IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM {TB_UNIFIED} c
-                  WHERE c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
-
-                  UNION ALL
-
-                  SELECT 1 FROM {TB_CARSOME} co
-                  WHERE co.cars_standard_id = cs.id AND co.status IN ('active', 'sold')
-              )
             ORDER BY cs.variant_norm
         """
         rows = await conn.fetch(query, brand, model)
@@ -436,11 +445,24 @@ async def get_years_list(brand: str, model: str, variant: str) -> List[int]:
         if not standard_row:
             return []
         
-        # Get years from cars_unified
+        # Get years from both cars_unified and carsome
         years_query = f"""
             SELECT DISTINCT year
-            FROM {TB_UNIFIED}
-            WHERE cars_standard_id = $1 AND year IS NOT NULL AND status IN ('active', 'sold')
+            FROM (
+                SELECT year
+                FROM {TB_UNIFIED}
+                WHERE cars_standard_id = $1
+                  AND year IS NOT NULL
+                  AND status IN ('active', 'sold')
+
+                UNION
+
+                SELECT year
+                FROM {TB_CARSOME}
+                WHERE cars_standard_id = $1
+                  AND year IS NOT NULL
+                  AND status IN ('active', 'sold')
+            ) AS combined_years
             ORDER BY year DESC
         """
         rows = await conn.fetch(years_query, standard_row['id'])
@@ -463,30 +485,26 @@ async def get_car_records(
     """Get car records for DataTables with pagination and filtering"""
     conn = await get_local_db_connection()
     try:
-        # Build base query
         conditions = ["1=1"]
-        params = []
+        params: List[Any] = []
         param_index = 1
-        
-        # Search filter
+
         if search:
             search_conditions = [
                 f"c.brand ILIKE ${param_index}",
                 f"c.model ILIKE ${param_index}",
                 f"c.variant ILIKE ${param_index}",
-                f"c.location ILIKE ${param_index}"
+                f"COALESCE(c.location, '') ILIKE ${param_index}"
             ]
             conditions.append(f"({' OR '.join(search_conditions)})")
             params.append(f"%{search}%")
             param_index += 1
-        
-        # Source filter
+
         if source_filter:
             conditions.append(f"c.source = ${param_index}")
             params.append(source_filter)
             param_index += 1
-        
-        # Year filter  
+
         if year_filter:
             if year_filter == "2024-":
                 conditions.append(f"c.year >= ${param_index}")
@@ -508,8 +526,7 @@ async def get_car_records(
                 conditions.append(f"c.year < ${param_index}")
                 params.append(2010)
                 param_index += 1
-        
-        # Price filter
+
         if price_filter:
             if price_filter == "0-50000":
                 conditions.append(f"c.price BETWEEN ${param_index} AND ${param_index + 1}")
@@ -528,119 +545,229 @@ async def get_car_records(
                 params.append(200000)
                 param_index += 1
 
-        # Always filter by status (active or sold only)
-        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
-        params.extend(['active', 'sold'])
-        param_index += 2
-
         where_clause = " AND ".join(conditions)
-        
-        # Order handling
-        order_sql = ""
+
+        combined_cte = f"""
+            WITH combined AS (
+                SELECT 
+                    c.id,
+                    c.source,
+                    c.brand,
+                    c.model,
+                    c.variant,
+                    c.year,
+                    c.price,
+                    c.mileage,
+                    c.location,
+                    c.condition,
+                    c.listing_url,
+                    c.last_scraped_at,
+                    c.information_ads_date,
+                    c.cars_standard_id,
+                    c.last_scraped_at AS created_at
+                FROM {TB_UNIFIED} c
+                WHERE c.status IN ('active', 'sold')
+
+                UNION ALL
+
+                SELECT
+                    co.id,
+                    co.source,
+                    co.brand,
+                    co.model,
+                    co.variant,
+                    co.year,
+                    co.price,
+                    co.mileage,
+                    NULL AS location,
+                    NULL AS condition,
+                    NULL AS listing_url,
+                    co.last_updated_at AS last_scraped_at,
+                    co.created_at::date AS information_ads_date,
+                    co.cars_standard_id,
+                    co.created_at AS created_at
+                FROM {TB_CARSOME} co
+                WHERE co.status IN ('active', 'sold')
+            )
+        """
+
+        total_query = f"""
+            {combined_cte}
+            SELECT COUNT(*)
+            FROM combined c
+            WHERE {where_clause}
+        """
+        total_records = await conn.fetchval(total_query, *params)
+
         if order_column:
             order_col_map = {
                 "0": "c.id",
-                "1": "c.brand",
-                "2": "c.model", 
-                "3": "c.variant",
-                "4": "c.year",
-                "5": "c.price",
+                "1": "c.source",
+                "2": "c.brand",
+                "3": "c.model",
+                "4": "c.variant",
+                "5": "c.year",
                 "6": "c.mileage",
-                "7": "c.location",
-                "8": "c.source"
+                "7": "c.price"
             }
-            order_col = order_col_map.get(order_column, "c.id")
-            order_sql = f"ORDER BY {order_col} {order_direction.upper()}"
+            chosen_col = order_col_map.get(order_column, "c.id")
+            direction = "ASC" if order_direction.lower() == "asc" else "DESC"
+            order_sql = f"ORDER BY {chosen_col} {direction}, c.id DESC"
         else:
-            order_sql = "ORDER BY c.id DESC"
-        
-        # Get total records
-        total_query = f"SELECT COUNT(*) FROM {TB_UNIFIED} c WHERE {where_clause}"
-        total_records = await conn.fetchval(total_query, *params)
-        
-        # Get paginated data
+            order_sql = "ORDER BY COALESCE(c.last_scraped_at, c.created_at) DESC NULLS LAST, c.id DESC"
+
+        limit_param = param_index
+        offset_param = param_index + 1
         data_query = f"""
-            SELECT c.id, c.source, c.brand, c.model, c.variant, c.year, 
-                   c.price, c.mileage, c.location, c.condition, c.listing_url,
-                   c.last_scraped_at, c.information_ads_date
-            FROM {TB_UNIFIED} c
+            {combined_cte}
+            SELECT
+                c.id,
+                c.source,
+                c.brand,
+                c.model,
+                c.variant,
+                c.year,
+                c.price,
+                c.mileage,
+                c.location,
+                c.condition,
+                c.listing_url,
+                c.last_scraped_at,
+                c.information_ads_date,
+                c.cars_standard_id,
+                c.created_at
+            FROM combined c
             WHERE {where_clause}
             {order_sql}
-            LIMIT ${param_index} OFFSET ${param_index + 1}
+            LIMIT ${limit_param} OFFSET ${offset_param}
         """
-        params.extend([length, start])
-        
-        rows = await conn.fetch(data_query, *params)
-        
-        # Format data for DataTables (array format expected by template)
+
+        params_for_data = params + [length, start]
+        rows = await conn.fetch(data_query, *params_for_data)
+
         data = []
         for row in rows:
+            unique_identifier = f"{row['source']}:{row['id']}"
             data.append([
-                row['id'],                                              # 0 - ID
-                row['source'],                                          # 1 - Source
-                row['brand'] or "-",                                   # 2 - Brand
-                row['model'] or "-",                                   # 3 - Model
-                row['variant'] or "-",                                 # 4 - Variant
-                row['year'] or "-",                                    # 5 - Year
-                row['mileage'] if row['mileage'] else "",              # 6 - Mileage (raw number)
-                row['price'] if row['price'] else "",                  # 7 - Price (raw number)
-                row['id']                                              # 8 - Actions (use ID for buttons)
+                row['id'],
+                row['source'],
+                row['brand'] or "-",
+                row['model'] or "-",
+                row['variant'] or "-",
+                row['year'] or "-",
+                row['mileage'] if row['mileage'] else "",
+                row['price'] if row['price'] else "",
+                unique_identifier
             ])
-        
+
         return {
             "draw": draw,
             "recordsTotal": total_records,
             "recordsFiltered": total_records,
             "data": data
         }
-        
     finally:
         await conn.close()
 
 
-async def get_car_detail(car_id: int) -> Dict[str, Any]:
+async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str, Any]:
     """Get detailed car information by ID"""
     conn = await get_local_db_connection()
     try:
-        query = f"""
+        unified_params: List[Any] = [car_id]
+        unified_query = f"""
             SELECT c.*, cs.brand_norm, cs.model_norm, cs.variant_norm
             FROM {TB_UNIFIED} c
             LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
             WHERE c.id = $1
         """
-        row = await conn.fetchrow(query, car_id)
-        
-        if not row:
-            raise HTTPException(status_code=404, detail="Car not found")
-        
-        return {
-            'id': row['id'],
-            'source': row['source'],
-            'listing_url': row['listing_url'],
-            'brand': row['brand'],
-            'model': row['model'],
-            'variant': row['variant'],
-            'condition': row['condition'],
-            'year': row['year'],
-            'mileage': row['mileage'],
-            'transmission': row['transmission'],
-            'seat_capacity': row['seat_capacity'],
-            'engine_cc': row['engine_cc'],
-            'fuel_type': row['fuel_type'],
-            'price': row['price'],
-            'location': row['location'],
-            'information_ads': row['information_ads'],
-            'images': row['images'],
-            'status': row['status'],
-            'ads_tag': row['ads_tag'],
-            'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
-            'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
-            'standard_info': {
-                'brand_norm': row['brand_norm'],
-                'model_norm': row['model_norm'], 
-                'variant_norm': row['variant_norm']
-            } if row['brand_norm'] else None
-        }
+
+        if source and source != "carsome":
+            unified_params.append(source)
+            unified_query += " AND c.source = $2"
+
+        row = None
+        if source != "carsome":
+            row = await conn.fetchrow(unified_query, *unified_params)
+
+        if row:
+            return {
+                'id': row['id'],
+                'source': row['source'],
+                'listing_url': row['listing_url'],
+                'brand': row['brand'],
+                'model': row['model'],
+                'variant': row['variant'],
+                'condition': row['condition'],
+                'year': row['year'],
+                'mileage': row['mileage'],
+                'transmission': row['transmission'],
+                'seat_capacity': row['seat_capacity'],
+                'engine_cc': row['engine_cc'],
+                'fuel_type': row['fuel_type'],
+                'price': row['price'],
+                'location': row['location'],
+                'information_ads': row['information_ads'],
+                'images': row['images'],
+                'status': row['status'],
+                'ads_tag': row['ads_tag'],
+                'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
+                'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
+                'created_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
+                'standard_info': {
+                    'brand_norm': row['brand_norm'],
+                    'model_norm': row['model_norm'],
+                    'variant_norm': row['variant_norm']
+                } if row['brand_norm'] else None
+            }
+
+        carsome_params: List[Any] = [car_id]
+        carsome_query = f"""
+            SELECT co.*, cs.brand_norm, cs.model_norm, cs.variant_norm
+            FROM {TB_CARSOME} co
+            LEFT JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+            WHERE co.id = $1
+        """
+
+        carsome_row = await conn.fetchrow(carsome_query, *carsome_params)
+
+        if carsome_row:
+            created_at = carsome_row['created_at']
+            created_at_iso = created_at.isoformat() if created_at else None
+            last_updated = carsome_row['last_updated_at']
+            last_updated_iso = last_updated.isoformat() if last_updated else created_at_iso
+
+            return {
+                'id': carsome_row['id'],
+                'source': carsome_row['source'] or 'carsome',
+                'listing_url': None,
+                'brand': carsome_row['brand'],
+                'model': carsome_row['model'],
+                'variant': carsome_row['variant'],
+                'condition': None,
+                'year': carsome_row['year'],
+                'mileage': carsome_row['mileage'],
+                'transmission': None,
+                'seat_capacity': None,
+                'engine_cc': None,
+                'fuel_type': None,
+                'price': carsome_row['price'],
+                'location': None,
+                'information_ads': None,
+                'images': carsome_row['image'],
+                'status': carsome_row['status'],
+                'ads_tag': None,
+                'last_scraped_at': last_updated_iso,
+                'information_ads_date': created_at.date().isoformat() if created_at else None,
+                'created_at': created_at_iso,
+                'standard_info': {
+                    'brand_norm': carsome_row['brand_norm'],
+                    'model_norm': carsome_row['model_norm'],
+                    'variant_norm': carsome_row['variant_norm']
+                } if carsome_row['brand_norm'] else None
+            }
+
+        raise HTTPException(status_code=404, detail="Car not found")
     finally:
         await conn.close()
 
@@ -649,25 +776,43 @@ async def get_statistics() -> Dict[str, Any]:
     """Get dashboard statistics"""
     conn = await get_local_db_connection()
     try:
-        # Get basic counts
-        car_count_query = f"SELECT COUNT(*) FROM {TB_UNIFIED} WHERE status IN ('active', 'sold')"
+        combined_cte = f"""
+            WITH combined AS (
+                SELECT c.id, c.cars_standard_id, c.brand, c.model
+                FROM {TB_UNIFIED} c
+                WHERE c.status IN ('active', 'sold')
+
+                UNION ALL
+
+                SELECT co.id, co.cars_standard_id, co.brand, co.model
+                FROM {TB_CARSOME} co
+                WHERE co.status IN ('active', 'sold')
+            )
+        """
+
+        car_count_query = f"""
+            {combined_cte}
+            SELECT COUNT(*) FROM combined
+        """
         brand_count_query = f"""
-            SELECT COUNT(DISTINCT cs.brand_norm)
-            FROM {TB_CARS_STANDARD} cs
-            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
-            WHERE cs.brand_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            {combined_cte}
+            SELECT COUNT(DISTINCT COALESCE(cs.brand_norm, combined.brand))
+            FROM combined
+            LEFT JOIN {TB_CARS_STANDARD} cs ON combined.cars_standard_id = cs.id
+            WHERE COALESCE(cs.brand_norm, combined.brand) IS NOT NULL
         """
         model_count_query = f"""
-            SELECT COUNT(DISTINCT cs.model_norm)
-            FROM {TB_CARS_STANDARD} cs
-            INNER JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id
-            WHERE cs.model_norm IS NOT NULL AND c.status IN ('active', 'sold')
+            {combined_cte}
+            SELECT COUNT(DISTINCT COALESCE(cs.model_norm, combined.model))
+            FROM combined
+            LEFT JOIN {TB_CARS_STANDARD} cs ON combined.cars_standard_id = cs.id
+            WHERE COALESCE(cs.model_norm, combined.model) IS NOT NULL
         """
-        
+
         car_records = await conn.fetchval(car_count_query)
         total_brands = await conn.fetchval(brand_count_query)
         total_models = await conn.fetchval(model_count_query)
-        
+
         return {
             'car_records': car_records,
             'total_brands': total_brands,
@@ -683,9 +828,20 @@ async def get_today_data_count() -> int:
     try:
         today = date.today()
         query = f"""
-            SELECT COUNT(*)
-            FROM {TB_UNIFIED}
-            WHERE information_ads_date = $1 AND status IN ('active', 'sold')
+            SELECT 
+                (
+                    SELECT COUNT(*)
+                    FROM {TB_UNIFIED}
+                    WHERE information_ads_date = $1
+                      AND status IN ('active', 'sold')
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM {TB_CARSOME}
+                    WHERE DATE(created_at) = $1
+                      AND status IN ('active', 'sold')
+                ) AS total_count
         """
         count = await conn.fetchval(query, today)
         return count
@@ -792,18 +948,32 @@ async def get_brand_car_counts() -> Dict[str, int]:
     conn = await get_local_db_connection()
     try:
         query = f"""
-            SELECT cs.brand_norm, COUNT(c.id) as car_count
-            FROM {TB_CARS_STANDARD} cs
-            LEFT JOIN {TB_UNIFIED} c ON c.cars_standard_id = cs.id AND c.status IN ('active', 'sold')
-            WHERE cs.brand_norm IS NOT NULL
-            GROUP BY cs.brand_norm
-            ORDER BY cs.brand_norm
+            WITH combined AS (
+                SELECT 
+                    COALESCE(cs.brand_norm, c.brand) AS brand_name
+                FROM {TB_UNIFIED} c
+                LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+                WHERE c.status IN ('active', 'sold')
+
+                UNION ALL
+
+                SELECT 
+                    COALESCE(cs.brand_norm, co.brand) AS brand_name
+                FROM {TB_CARSOME} co
+                LEFT JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+                WHERE co.status IN ('active', 'sold')
+            )
+            SELECT brand_name, COUNT(*) AS car_count
+            FROM combined
+            WHERE brand_name IS NOT NULL
+            GROUP BY brand_name
+            ORDER BY brand_name
         """
         rows = await conn.fetch(query)
         
-        result = {}
+        result: Dict[str, int] = {}
         for row in rows:
-            result[row['brand_norm']] = row['car_count']
+            result[row['brand_name']] = row['car_count']
         
         return result
     finally:

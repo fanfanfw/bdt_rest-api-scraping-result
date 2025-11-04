@@ -208,12 +208,13 @@ async def get_cars_for_django(
 @django_router.get("/django/car/{car_id}", tags=["Django"])
 async def get_car_detail_for_django(
     car_id: int,
+    source: Optional[str] = Query(None),
     x_django_key: str = Header(...)
 ):
     """Get detailed car information"""
     verify_django_key(x_django_key)
     try:
-        car_detail = await get_car_detail(car_id)
+        car_detail = await get_car_detail(car_id, source)
         return car_detail
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

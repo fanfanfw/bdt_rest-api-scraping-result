@@ -184,6 +184,10 @@ async def get_cars_for_django(
     source_filter: Optional[str] = Query(None),
     year_filter: Optional[str] = Query(None),
     price_filter: Optional[str] = Query(None),
+    brand_filter: Optional[str] = Query(None),
+    model_filter: Optional[str] = Query(None),
+    variant_filter: Optional[str] = Query(None),
+    year_value: Optional[int] = Query(None),
     x_django_key: str = Header(...)
 ):
     """Get car records for Django DataTables"""
@@ -198,7 +202,11 @@ async def get_cars_for_django(
             order_direction=order_direction,
             source_filter=source_filter,
             year_filter=year_filter,
-            price_filter=price_filter
+            price_filter=price_filter,
+            brand_filter=brand_filter,
+            model_filter=model_filter,
+            variant_filter=variant_filter,
+            year_value=year_value
         )
         return result
     except Exception as e:

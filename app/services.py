@@ -480,7 +480,11 @@ async def get_car_records(
     order_direction: str = "asc",
     source_filter: Optional[str] = None,
     year_filter: Optional[str] = None,
-    price_filter: Optional[str] = None
+    price_filter: Optional[str] = None,
+    brand_filter: Optional[str] = None,
+    model_filter: Optional[str] = None,
+    variant_filter: Optional[str] = None,
+    year_value: Optional[int] = None
 ) -> Dict[str, Any]:
     """Get car records for DataTables with pagination and filtering"""
     conn = await get_local_db_connection()
@@ -505,8 +509,32 @@ async def get_car_records(
             params.append(source_filter)
             param_index += 1
 
+        if brand_filter:
+            conditions.append(f"LOWER(c.brand) = LOWER(${param_index})")
+            params.append(brand_filter)
+            param_index += 1
+
+        if model_filter:
+            conditions.append(f"LOWER(c.model) = LOWER(${param_index})")
+            params.append(model_filter)
+            param_index += 1
+
+        if variant_filter:
+            conditions.append(f"LOWER(c.variant) = LOWER(${param_index})")
+            params.append(variant_filter)
+            param_index += 1
+
+        if year_value:
+            conditions.append(f"c.year = ${param_index}")
+            params.append(year_value)
+            param_index += 1
+
         if year_filter:
-            if year_filter == "2024-":
+            if isinstance(year_filter, str) and year_filter.isdigit():
+                conditions.append(f"c.year = ${param_index}")
+                params.append(int(year_filter))
+                param_index += 1
+            elif year_filter == "2024-":
                 conditions.append(f"c.year >= ${param_index}")
                 params.append(2024)
                 param_index += 1

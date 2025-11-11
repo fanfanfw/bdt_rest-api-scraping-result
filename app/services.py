@@ -72,6 +72,52 @@ def clean_and_standardize_variant(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip().upper()
 
+def _build_price_vs_mileage_cte() -> str:
+    """
+    Common CTE that unifies rows from cars_unified and carsome with aligned columns
+    and already-normalized brand/model/variant taken from cars_standard.
+    Only listings that have a valid cars_standard_id will appear in the combined set.
+    """
+    return f"""
+        WITH combined AS (
+            SELECT 
+                c.id,
+                c.cars_standard_id,
+                cs.brand_norm AS brand,
+                cs.model_norm AS model,
+                cs.variant_norm AS variant,
+                c.price,
+                c.mileage,
+                c.year,
+                c.source,
+                c.status,
+                c.last_scraped_at,
+                c.information_ads_date
+            FROM {TB_UNIFIED} c
+            INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            WHERE c.status IN ('active', 'sold')
+
+            UNION ALL
+
+            SELECT
+                co.id,
+                co.cars_standard_id,
+                cs.brand_norm AS brand,
+                cs.model_norm AS model,
+                cs.variant_norm AS variant,
+                co.price,
+                co.mileage,
+                co.year,
+                COALESCE(co.source, 'carsome') AS source,
+                co.status,
+                co.last_updated_at AS last_scraped_at,
+                co.created_at::date AS information_ads_date
+            FROM {TB_CARSOME} co
+            INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+            WHERE co.status IN ('active', 'sold')
+        )
+    """
+
 # insert_or_update_data_into_local_db function removed - sync now handled by sync_cars.py
 
 # get_id_mapping function removed - no longer needed
@@ -92,10 +138,13 @@ async def get_brand_distribution_carlistmy() -> List[BrandCount]:
     conn = await get_local_db_connection()
     try:
         query = f"""
-            SELECT brand, COUNT(*) AS total
-            FROM {TB_UNIFIED}
-            WHERE brand IS NOT NULL AND source = 'carlistmy' AND status IN ('active', 'sold')
-            GROUP BY brand
+            SELECT cs.brand_norm AS brand, COUNT(*) AS total
+            FROM {TB_UNIFIED} c
+            INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            WHERE cs.brand_norm IS NOT NULL
+              AND c.source = 'carlistmy'
+              AND c.status IN ('active', 'sold')
+            GROUP BY cs.brand_norm
             ORDER BY total DESC
         """
         rows = await conn.fetch(query)
@@ -130,18 +179,18 @@ async def get_price_vs_mileage_filtered(
         param_index = 1  
 
         if brand:
-            conditions.append(f"(cs.brand_norm ILIKE ${param_index} OR c.brand ILIKE ${param_index})")
-            values.append(f"%{brand}%")
+            conditions.append(f"LOWER(c.brand) = LOWER(${param_index})")
+            values.append(brand)
             param_index += 1
         
         if model:
-            conditions.append(f"(cs.model_norm ILIKE ${param_index} OR c.model ILIKE ${param_index})")
-            values.append(f"%{model}%")
+            conditions.append(f"LOWER(c.model) = LOWER(${param_index})")
+            values.append(model)
             param_index += 1
         
         if variant:
-            conditions.append(f"c.variant ILIKE ${param_index}")
-            values.append(f"%{variant}%")
+            conditions.append(f"LOWER(c.variant) = LOWER(${param_index})")
+            values.append(variant)
             param_index += 1
         
         if year:
@@ -150,15 +199,10 @@ async def get_price_vs_mileage_filtered(
             param_index += 1
 
         # Add source filter if specified
-        if source and source in ["mudahmy", "carlistmy"]:
+        if source:
             conditions.append(f"c.source = ${param_index}")
             values.append(source)
             param_index += 1
-
-        # Always filter by status (active or sold only)
-        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
-        values.extend(['active', 'sold'])
-        param_index += 2
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -169,7 +213,9 @@ async def get_price_vs_mileage_filtered(
         sort_column = "information_ads_date" if sort_by == "ads_date" else "last_scraped_at"
         sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
         
+        combined_cte = _build_price_vs_mileage_cte()
         final_query = f"""
+            {combined_cte}
             SELECT 
                 c.brand,
                 c.model,
@@ -180,8 +226,7 @@ async def get_price_vs_mileage_filtered(
                 c.source,
                 c.last_scraped_at as scraped_at,
                 c.information_ads_date as ads_date
-            FROM {TB_UNIFIED} c
-            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            FROM combined c
             WHERE {where_clause}
             ORDER BY c.{sort_column} {sort_order} NULLS LAST, c.id DESC
             LIMIT ${limit_param} OFFSET ${offset_param}
@@ -261,18 +306,18 @@ async def get_price_vs_mileage_total_count(
         param_index = 1  
 
         if brand:
-            conditions.append(f"(cs.brand_norm ILIKE ${param_index} OR c.brand ILIKE ${param_index})")
-            values.append(f"%{brand}%")
+            conditions.append(f"LOWER(c.brand) = LOWER(${param_index})")
+            values.append(brand)
             param_index += 1
         
         if model:
-            conditions.append(f"(cs.model_norm ILIKE ${param_index} OR c.model ILIKE ${param_index})")
-            values.append(f"%{model}%")
+            conditions.append(f"LOWER(c.model) = LOWER(${param_index})")
+            values.append(model)
             param_index += 1
         
         if variant:
-            conditions.append(f"(cs.variant_norm ILIKE ${param_index} OR c.variant ILIKE ${param_index})")
-            values.append(f"%{variant}%")
+            conditions.append(f"LOWER(c.variant) = LOWER(${param_index})")
+            values.append(variant)
             param_index += 1
         
         if year:
@@ -281,22 +326,18 @@ async def get_price_vs_mileage_total_count(
             param_index += 1
 
         # Add source filter if specified
-        if source and source in ["mudahmy", "carlistmy"]:
+        if source:
             conditions.append(f"c.source = ${param_index}")
             values.append(source)
             param_index += 1
 
-        # Always filter by status (active or sold only)
-        conditions.append(f"c.status IN (${param_index}, ${param_index + 1})")
-        values.extend(['active', 'sold'])
-        param_index += 2
-
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
+        combined_cte = _build_price_vs_mileage_cte()
         count_query = f"""
+            {combined_cte}
             SELECT COUNT(*) AS total
-            FROM {TB_UNIFIED} c
-            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            FROM combined c
             WHERE {where_clause}
         """
         
@@ -579,10 +620,10 @@ async def get_car_records(
             WITH combined AS (
                 SELECT 
                     c.id,
-                    c.source,
-                    c.brand,
-                    c.model,
-                    c.variant,
+                    COALESCE(c.source, 'carlistmy') AS source,
+                    cs.brand_norm AS brand,
+                    cs.model_norm AS model,
+                    cs.variant_norm AS variant,
                     c.year,
                     c.price,
                     c.mileage,
@@ -594,16 +635,17 @@ async def get_car_records(
                     c.cars_standard_id,
                     c.last_scraped_at AS created_at
                 FROM {TB_UNIFIED} c
+                INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
                 WHERE c.status IN ('active', 'sold')
 
                 UNION ALL
 
                 SELECT
                     co.id,
-                    co.source,
-                    co.brand,
-                    co.model,
-                    co.variant,
+                    COALESCE(co.source, 'carsome') AS source,
+                    cs.brand_norm AS brand,
+                    cs.model_norm AS model,
+                    cs.variant_norm AS variant,
                     co.year,
                     co.price,
                     co.mileage,
@@ -615,6 +657,7 @@ async def get_car_records(
                     co.cars_standard_id,
                     co.created_at AS created_at
                 FROM {TB_CARSOME} co
+                INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
                 WHERE co.status IN ('active', 'sold')
             )
         """
@@ -706,7 +749,7 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
         unified_query = f"""
             SELECT c.*, cs.brand_norm, cs.model_norm, cs.variant_norm
             FROM {TB_UNIFIED} c
-            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
             WHERE c.id = $1
         """
 
@@ -723,9 +766,12 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
                 'id': row['id'],
                 'source': row['source'],
                 'listing_url': row['listing_url'],
-                'brand': row['brand'],
-                'model': row['model'],
-                'variant': row['variant'],
+                'brand': row['brand_norm'] or row['brand'],
+                'brand_raw': row['brand'],
+                'model': row['model_norm'] or row['model'],
+                'model_raw': row['model'],
+                'variant': row['variant_norm'] or row['variant'],
+                'variant_raw': row['variant'],
                 'condition': row['condition'],
                 'year': row['year'],
                 'mileage': row['mileage'],
@@ -753,7 +799,7 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
         carsome_query = f"""
             SELECT co.*, cs.brand_norm, cs.model_norm, cs.variant_norm
             FROM {TB_CARSOME} co
-            LEFT JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+            INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
             WHERE co.id = $1
         """
 
@@ -769,9 +815,12 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
                 'id': carsome_row['id'],
                 'source': carsome_row['source'] or 'carsome',
                 'listing_url': None,
-                'brand': carsome_row['brand'],
-                'model': carsome_row['model'],
-                'variant': carsome_row['variant'],
+                'brand': carsome_row['brand_norm'] or carsome_row['brand'],
+                'brand_raw': carsome_row['brand'],
+                'model': carsome_row['model_norm'] or carsome_row['model'],
+                'model_raw': carsome_row['model'],
+                'variant': carsome_row['variant_norm'] or carsome_row['variant'],
+                'variant_raw': carsome_row['variant'],
                 'condition': None,
                 'year': carsome_row['year'],
                 'mileage': carsome_row['mileage'],
@@ -806,14 +855,16 @@ async def get_statistics() -> Dict[str, Any]:
     try:
         combined_cte = f"""
             WITH combined AS (
-                SELECT c.id, c.cars_standard_id, c.brand, c.model
+                SELECT c.id, c.cars_standard_id, cs.brand_norm AS brand, cs.model_norm AS model
                 FROM {TB_UNIFIED} c
+                INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
                 WHERE c.status IN ('active', 'sold')
 
                 UNION ALL
 
-                SELECT co.id, co.cars_standard_id, co.brand, co.model
+                SELECT co.id, co.cars_standard_id, cs.brand_norm AS brand, cs.model_norm AS model
                 FROM {TB_CARSOME} co
+                INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
                 WHERE co.status IN ('active', 'sold')
             )
         """
@@ -824,17 +875,15 @@ async def get_statistics() -> Dict[str, Any]:
         """
         brand_count_query = f"""
             {combined_cte}
-            SELECT COUNT(DISTINCT COALESCE(cs.brand_norm, combined.brand))
+            SELECT COUNT(DISTINCT combined.brand)
             FROM combined
-            LEFT JOIN {TB_CARS_STANDARD} cs ON combined.cars_standard_id = cs.id
-            WHERE COALESCE(cs.brand_norm, combined.brand) IS NOT NULL
+            WHERE combined.brand IS NOT NULL
         """
         model_count_query = f"""
             {combined_cte}
-            SELECT COUNT(DISTINCT COALESCE(cs.model_norm, combined.model))
+            SELECT COUNT(DISTINCT combined.model)
             FROM combined
-            LEFT JOIN {TB_CARS_STANDARD} cs ON combined.cars_standard_id = cs.id
-            WHERE COALESCE(cs.model_norm, combined.model) IS NOT NULL
+            WHERE combined.model IS NOT NULL
         """
 
         car_records = await conn.fetchval(car_count_query)
@@ -859,16 +908,18 @@ async def get_today_data_count() -> int:
             SELECT 
                 (
                     SELECT COUNT(*)
-                    FROM {TB_UNIFIED}
-                    WHERE information_ads_date = $1
-                      AND status IN ('active', 'sold')
+                    FROM {TB_UNIFIED} c
+                    INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+                    WHERE c.information_ads_date = $1
+                      AND c.status IN ('active', 'sold')
                 )
                 +
                 (
                     SELECT COUNT(*)
-                    FROM {TB_CARSOME}
-                    WHERE DATE(created_at) = $1
-                      AND status IN ('active', 'sold')
+                    FROM {TB_CARSOME} co
+                    INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+                    WHERE DATE(co.created_at) = $1
+                      AND co.status IN ('active', 'sold')
                 ) AS total_count
         """
         count = await conn.fetchval(query, today)
@@ -978,17 +1029,17 @@ async def get_brand_car_counts() -> Dict[str, int]:
         query = f"""
             WITH combined AS (
                 SELECT 
-                    COALESCE(cs.brand_norm, c.brand) AS brand_name
+                    cs.brand_norm AS brand_name
                 FROM {TB_UNIFIED} c
-                LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+                INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
                 WHERE c.status IN ('active', 'sold')
 
                 UNION ALL
 
                 SELECT 
-                    COALESCE(cs.brand_norm, co.brand) AS brand_name
+                    cs.brand_norm AS brand_name
                 FROM {TB_CARSOME} co
-                LEFT JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+                INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
                 WHERE co.status IN ('active', 'sold')
             )
             SELECT brand_name, COUNT(*) AS car_count

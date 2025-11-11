@@ -45,7 +45,7 @@ async def clear_rate_limit_endpoint(
 
 @router.get("/analytics/scatter_plot", tags=["Analytics"])
 async def scatter_plot(
-        source: Optional[str] = Query(None, description="mudahmy atau carlistmy"),
+        source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
         brand: Optional[str] = Query(None),
         model: Optional[str] = Query(None),
         variant: Optional[str] = Query(None),
@@ -66,7 +66,7 @@ async def scatter_plot(
 
 @router.get("/analytics/price_vs_mileage", tags=["Analytics"])
 async def price_vs_mileage(
-    source: Optional[str] = Query(None, description="mudahmy atau carlistmy, jika tidak disertakan akan menampilkan data dari kedua sumber"),
+    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
     brand: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     variant: Optional[str] = Query(None),

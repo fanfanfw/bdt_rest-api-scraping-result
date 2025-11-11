@@ -2,13 +2,16 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query, Header, status
 from fastapi.responses import StreamingResponse
 from app.services import (
-    get_price_vs_mileage_filtered, generate_scatter_plot, 
-    create_api_key, clear_rate_limit, get_brands_list, get_models_list, 
-    get_variants_list, get_years_list, get_car_records, get_car_detail, 
-    get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts
+    get_price_vs_mileage_filtered, generate_scatter_plot,
+    create_api_key, clear_rate_limit, get_brands_list, get_models_list,
+    get_variants_list, get_years_list, get_car_records, get_car_detail,
+    get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
 )
 from typing import Optional
-from app.models import APIKeyCreateRequest, APIKeyCreateResponse
+from app.models import (
+    APIKeyCreateRequest,
+    APIKeyCreateResponse,
+)
 import os
 
 router = APIRouter()

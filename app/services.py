@@ -7,10 +7,17 @@ import io
 import numpy as np
 import secrets
 from datetime import datetime, timedelta, date
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Set
 from fastapi import HTTPException
-from app.database import get_local_db_connection
-from app.models import BrandCount,APIKeyCreateRequest, APIKeyCreateResponse
+from app.database import get_local_db_connection, get_remote_db_connection
+from app.models import (
+    BrandCount,
+    APIKeyCreateRequest,
+    APIKeyCreateResponse,
+    CarsStandardComparisonResult,
+    CarsStandardSyncResult,
+    ColumnDifference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +26,226 @@ TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
+
+def _extract_schema_and_table(table_identifier: str) -> Tuple[str, str]:
+    """Split table identifier into schema and table parts."""
+    if "." in table_identifier:
+        schema, table = table_identifier.split(".", 1)
+    else:
+        schema, table = "public", table_identifier
+
+    return schema.replace('"', "").lower(), table.replace('"', "").lower()
+
+async def _get_table_columns(conn, table_name: str) -> List[str]:
+    schema, plain_table = _extract_schema_and_table(table_name)
+    query = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = $1
+          AND table_name = $2
+        ORDER BY ordinal_position
+    """
+    rows = await conn.fetch(query, schema, plain_table)
+    return [row["column_name"] for row in rows]
+
+async def _fetch_table_rows(conn, table_name: str, columns: List[str]) -> Dict[Any, Dict[str, Any]]:
+    columns_sql = ", ".join(columns)
+    query = f"SELECT {columns_sql} FROM {table_name}"
+    rows = await conn.fetch(query)
+    result: Dict[Any, Dict[str, Any]] = {}
+    for row in rows:
+        row_dict = {col: row[col] for col in columns}
+        result[row_dict["id"]] = row_dict
+    return result
+
+async def _fetch_cars_standard_snapshots() -> Tuple[List[str], Dict[Any, Dict[str, Any]], Dict[Any, Dict[str, Any]]]:
+    """
+    Ambil struktur kolom dan snapshot isi tabel cars_standard di lokal & remote.
+    """
+    local_conn = await get_local_db_connection()
+    remote_conn = await get_remote_db_connection()
+
+    try:
+        columns = await _get_table_columns(local_conn, TB_CARS_STANDARD)
+        if not columns:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table {TB_CARS_STANDARD} has no columns in the local database"
+            )
+
+        local_rows = await _fetch_table_rows(local_conn, TB_CARS_STANDARD, columns)
+        remote_rows = await _fetch_table_rows(remote_conn, TB_CARS_STANDARD, columns)
+
+        return columns, local_rows, remote_rows
+
+    finally:
+        await local_conn.close()
+        await remote_conn.close()
+
+def _detect_mismatched_ids(
+    columns: List[str],
+    left_rows: Dict[Any, Dict[str, Any]],
+    right_rows: Dict[Any, Dict[str, Any]],
+) -> Set[Any]:
+    """
+    Cari ID yang hilang di right_rows atau kolomnya berbeda dibanding left_rows.
+    """
+    mismatched: Set[Any] = set()
+    for record_id, left_row in left_rows.items():
+        right_row = right_rows.get(record_id)
+        if right_row is None:
+            mismatched.add(record_id)
+            continue
+
+        for column in columns:
+            if column == "id":
+                continue
+            if left_row[column] != right_row[column]:
+                mismatched.add(record_id)
+                break
+    return mismatched
+
+def _build_upsert_query(table_name: str, columns: List[str]) -> str:
+    col_list = ", ".join(columns)
+    placeholders = ", ".join(f"${idx}" for idx in range(1, len(columns) + 1))
+    update_cols = [col for col in columns if col != "id"]
+    if not update_cols:
+        raise HTTPException(status_code=500, detail="Table must contain non-ID columns for syncing")
+    update_set = ", ".join(f"{col}=EXCLUDED.{col}" for col in update_cols)
+    return (
+        f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+        f"ON CONFLICT (id) DO UPDATE SET {update_set}"
+    )
+
+async def compare_cars_standard_tables(max_differences: int = 100) -> CarsStandardComparisonResult:
+    """
+    Compare local and remote cars_standard tables and highlight mismatches.
+    """
+    if max_differences <= 0:
+        raise HTTPException(status_code=400, detail="max_differences must be greater than 0")
+
+    columns, local_rows, remote_rows = await _fetch_cars_standard_snapshots()
+
+    local_ids: Set[Any] = set(local_rows.keys())
+    remote_ids: Set[Any] = set(remote_rows.keys())
+
+    missing_in_remote = sorted(local_ids - remote_ids)
+    missing_in_local = sorted(remote_ids - local_ids)
+
+    differences: List[ColumnDifference] = []
+    shared_ids = sorted(local_ids & remote_ids)
+    reached_limit = False
+
+    for record_id in shared_ids:
+        local_row = local_rows[record_id]
+        remote_row = remote_rows[record_id]
+
+        for column in columns:
+            if column == "id":
+                continue
+
+            if local_row[column] != remote_row[column]:
+                differences.append(
+                    ColumnDifference(
+                        id=record_id,
+                        column=column,
+                        local_value=local_row[column],
+                        remote_value=remote_row[column],
+                    )
+                )
+
+                if len(differences) >= max_differences:
+                    reached_limit = True
+                    break
+
+        if reached_limit:
+            break
+
+    status = "OK"
+    if missing_in_local or missing_in_remote or differences:
+        status = "MISMATCH"
+
+    return CarsStandardComparisonResult(
+        status=status,
+        checked_at=datetime.utcnow(),
+        local_count=len(local_rows),
+        remote_count=len(remote_rows),
+        missing_in_local=missing_in_local,
+        missing_in_remote=missing_in_remote,
+        differences=differences,
+    )
+
+async def sync_cars_standard_tables(
+    direction: str,
+    ids: Optional[List[int]] = None,
+    sync_all: bool = False,
+) -> CarsStandardSyncResult:
+    """
+    Sinkronkan data cars_standard berdasarkan arah yang dipilih.
+
+    direction:
+        - "remote-to-local": remote dijadikan sumber, lokal ditimpa.
+        - "local-to-remote": lokal dijadikan sumber, remote ditimpa.
+    ids:
+        - Jika diisi, hanya ID tersebut yang disinkronkan (abaikan jika tidak ada di sumber).
+        - Jika kosong dan sync_all=False, otomatis pakai daftar ID yang berbeda antara kedua sisi.
+    sync_all:
+        - Bila True, semua baris dari sumber akan disalin ke target (mengabaikan deteksi mismatch).
+    """
+    normalized_direction = direction.lower()
+    if normalized_direction not in ("remote-to-local", "local-to-remote"):
+        raise HTTPException(
+            status_code=400,
+            detail="direction must be either 'remote-to-local' or 'local-to-remote'",
+        )
+
+    columns, local_rows, remote_rows = await _fetch_cars_standard_snapshots()
+
+    if normalized_direction == "remote-to-local":
+        source_rows = remote_rows
+        target_rows = local_rows
+        target_conn_factory = get_local_db_connection
+    else:
+        source_rows = local_rows
+        target_rows = remote_rows
+        target_conn_factory = get_remote_db_connection
+
+    if sync_all:
+        ids_to_sync = sorted(source_rows.keys())
+        missing_in_source = []
+    elif ids:
+        ids_to_sync = [record_id for record_id in ids if record_id in source_rows]
+        missing_in_source = sorted(record_id for record_id in ids if record_id not in source_rows)
+    else:
+        ids_to_sync = sorted(_detect_mismatched_ids(columns, source_rows, target_rows))
+        missing_in_source = []
+
+    if not ids_to_sync:
+        return CarsStandardSyncResult(
+            direction=normalized_direction,
+            table=TB_CARS_STANDARD,
+            synced_ids=[],
+            missing_in_source=missing_in_source,
+            total_synced=0,
+        )
+
+    query = _build_upsert_query(TB_CARS_STANDARD, columns)
+    target_conn = await target_conn_factory()
+    try:
+        for record_id in ids_to_sync:
+            row = source_rows[record_id]
+            values = [row[col] for col in columns]
+            await target_conn.execute(query, *values)
+    finally:
+        await target_conn.close()
+
+    return CarsStandardSyncResult(
+        direction=normalized_direction,
+        table=TB_CARS_STANDARD,
+        synced_ids=ids_to_sync,
+        missing_in_source=missing_in_source,
+        total_synced=len(ids_to_sync),
+    )
 
 def convert_price(price_str):
     if isinstance(price_str, int):

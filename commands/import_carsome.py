@@ -8,6 +8,7 @@ import csv
 import asyncio
 import asyncpg
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any
 import argparse
@@ -79,14 +80,76 @@ def parse_datetime(datetime_str: str) -> datetime:
     except ValueError:
         return datetime.now()
 
+def normalize_upper(value: str, fallback: str) -> str:
+    """Normalize text values: remove symbols, collapse spaces, uppercase"""
+    text = (value or '').strip()
+    if not text:
+        return fallback
+
+    text = text.replace('-', ' ')
+    text = re.sub(r'[\(\)]', ' ', text)
+    text = re.sub(r'[^A-Za-z0-9 ]+', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text.upper() if text else fallback
+
+
+def normalize_variant(value: str) -> str:
+    """Normalize variant by stripping symbols and extra spaces"""
+    return normalize_upper(value, 'NO VARIANT')
+
+
+def parse_integer(value: str) -> int:
+    """Parse generic integer value"""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return int(text)
+    except ValueError:
+        digits_only = ''.join(filter(str.isdigit, text))
+        return int(digits_only) if digits_only else None
+
+
+def get_csv_headers(csv_file_path: str) -> List[str]:
+    """Read header row and return cleaned column names"""
+    try:
+        with open(csv_file_path, 'r', encoding='utf-8') as file:
+            header_line = file.readline()
+    except FileNotFoundError:
+        raise
+
+    if not header_line:
+        raise ValueError("CSV file is empty or missing header row")
+
+    delimiter = ',' if ',' in header_line else '\t'
+    return [column.strip() for column in header_line.strip().split(delimiter) if column.strip()]
+
+
+def detect_data_delimiter(csv_file_path: str) -> str:
+    """Detect delimiter used for data rows (default to comma)"""
+    with open(csv_file_path, 'r', encoding='utf-8') as file:
+        file.readline()  # Skip header
+        sample = file.read(2048)
+
+    if sample.count('\t') >= sample.count(','):
+        return '\t'
+    return ','
+
+
 async def create_table(conn):
     """Create carsome table if not exists"""
     logger.info("Creating carsome table...")
 
     create_table_sql = """
     CREATE TABLE IF NOT EXISTS carsome (
-        id SERIAL PRIMARY KEY,
+        id BIGSERIAL PRIMARY KEY,
+        reg_no VARCHAR(50),
         image TEXT,
+        car_id BIGINT,
         brand VARCHAR(100),
         model VARCHAR(100),
         model_group VARCHAR(100) DEFAULT 'NO MODEL GROUP',
@@ -103,7 +166,9 @@ async def create_table(conn):
         is_deleted BOOLEAN DEFAULT FALSE,
 
         -- Source tracking
-        source VARCHAR(50) DEFAULT 'carsome'
+        source VARCHAR(50) DEFAULT 'carsome',
+
+        CONSTRAINT uniq_carsome_reg_no_car_id UNIQUE (reg_no, car_id)
     );
     """
 
@@ -114,10 +179,14 @@ async def import_csv_data(conn, csv_file_path: str):
     """Import data from CSV to carsome table"""
     logger.info(f"Importing data from {csv_file_path}...")
 
+    fieldnames = get_csv_headers(csv_file_path)
+    delimiter = detect_data_delimiter(csv_file_path)
+
     # Read CSV file
     try:
         with open(csv_file_path, 'r', encoding='utf-8') as file:
-            csv_reader = csv.DictReader(file)
+            file.readline()  # Skip header row already processed
+            csv_reader = csv.DictReader(file, fieldnames=fieldnames, delimiter=delimiter)
 
             # Prepare batch insert
             insert_data = []
@@ -126,11 +195,13 @@ async def import_csv_data(conn, csv_file_path: str):
                 try:
                     # Parse and clean data
                     data = {
+                        'reg_no': (row.get('reg_no') or '').strip().upper() or None,
                         'image': row.get('image', '').strip() if row.get('image') else None,
-                        'brand': row.get('brand', '').strip().upper() if row.get('brand') else None,
-                        'model': row.get('model', '').strip().upper() if row.get('model') else None,
+                        'car_id': parse_integer(row.get('car_id')),
+                        'brand': normalize_upper(row.get('brand'), 'NO BRAND'),
+                        'model': normalize_upper(row.get('model'), 'NO MODEL'),
                         'model_group': 'NO MODEL GROUP',  # Default value (already uppercase)
-                        'variant': row.get('variant', '').strip().upper() if row.get('variant') else None,
+                        'variant': normalize_variant(row.get('variant')),
                         'year': parse_year(row.get('year')),
                         'mileage': parse_mileage(row.get('mileage')),
                         'price': parse_price(row.get('price')),
@@ -139,7 +210,7 @@ async def import_csv_data(conn, csv_file_path: str):
                     }
 
                     # Only add if we have essential data
-                    if data['brand'] and data['model'] and data['price']:
+                    if data['price'] is not None:
                         insert_data.append(data)
 
                 except Exception as e:
@@ -162,17 +233,35 @@ async def import_csv_data(conn, csv_file_path: str):
                 # Prepare insert query
                 insert_query = """
                     INSERT INTO carsome (
-                        image, brand, model, model_group, variant, year, mileage,
-                        price, created_at, cars_standard_id, status, is_deleted, source
+                        reg_no, image, car_id, brand, model, model_group, variant,
+                        year, mileage, price, created_at, cars_standard_id,
+                        status, is_deleted, source
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
                     )
+                    ON CONFLICT (reg_no, car_id) DO UPDATE SET
+                        image = EXCLUDED.image,
+                        brand = EXCLUDED.brand,
+                        model = EXCLUDED.model,
+                        model_group = EXCLUDED.model_group,
+                        variant = EXCLUDED.variant,
+                        year = EXCLUDED.year,
+                        mileage = EXCLUDED.mileage,
+                        price = EXCLUDED.price,
+                        created_at = EXCLUDED.created_at,
+                        cars_standard_id = EXCLUDED.cars_standard_id,
+                        status = EXCLUDED.status,
+                        is_deleted = EXCLUDED.is_deleted,
+                        source = EXCLUDED.source,
+                        last_updated_at = CURRENT_TIMESTAMP
                 """
 
                 for data in batch:
                     await conn.execute(
                         insert_query,
+                        data['reg_no'],
                         data['image'],
+                        data['car_id'],
                         data['brand'],
                         data['model'],
                         data['model_group'],
@@ -243,7 +332,7 @@ async def get_import_stats(conn):
 async def main():
     """Main function"""
     parser = argparse.ArgumentParser(description='Import Carsome CSV data to database')
-    parser.add_argument('--csv', default='scrapes_export.csv', help='Path to CSV file')
+    parser.add_argument('--csv', default='scrapes.csv', help='Path to CSV file')
     parser.add_argument('--create-table', action='store_true', help='Create carsome table')
     parser.add_argument('--map-standard', action='store_true', help='Map to cars_standard table')
 

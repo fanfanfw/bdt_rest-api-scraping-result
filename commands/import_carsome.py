@@ -12,10 +12,14 @@ import re
 from datetime import datetime
 from typing import List, Dict, Any
 import argparse
+from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Load .env variables so script picks up local configuration
+load_dotenv(override=True)
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')

@@ -9,6 +9,8 @@ Usage:
   python commands/telegram_daily_report.py --date 2026-01-26
   python commands/telegram_daily_report.py --sync-subscribers --broadcast
   python commands/telegram_daily_report.py --sync-subscribers --sync-only
+  python commands/telegram_daily_report.py --handle-updates --reply-report --handle-only
+  python commands/telegram_daily_report.py --handle-updates --reply-report --reply-start --poll
 
 Required env (.env):
   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
@@ -28,6 +30,7 @@ Notes:
   - "UNIQUE" counts are based on DISTINCT listing_url.
     UNIQUE(today) excludes listing_url that already exist in the archive table (when present).
   - Today's counts match the dashboard KPI definition (status in active/sold and cars_standard_id is not null).
+  - For on-demand replies, run with --handle-updates --reply-report, then send /report (or /report YYYY-MM-DD) to the bot.
 """
 
 import argparse
@@ -296,6 +299,146 @@ def sync_subscribers_from_updates(conn, subscribers_table: str, state_table: str
 
     return registered
 
+def _parse_telegram_command(text: str) -> tuple[str | None, list[str]]:
+    tokens = (text or "").strip().split()
+    if not tokens:
+        return None, []
+    first = tokens[0]
+    if not isinstance(first, str) or not first.startswith("/"):
+        return None, []
+    cmd = first.split("@", 1)[0].lower()
+    return cmd, tokens[1:]
+
+
+def handle_updates_from_telegram(
+    conn,
+    *,
+    subscribers_table: str,
+    state_table: str,
+    table: str,
+    sources: list[str],
+    default_report_date: date,
+    reply_start: bool,
+    reply_report: bool,
+    updates_timeout: int = 0,
+) -> dict:
+    """
+    One-shot handler for incoming bot commands via getUpdates.
+
+    - /start: registers subscriber (private chats only)
+    - /report [YYYY-MM-DD]: sends the formatted report back to the requesting chat (private chats only)
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
+
+    subscribers_table = validate_table_name(subscribers_table)
+    state_table = validate_table_name(state_table)
+
+    last_update_id_value = get_bot_state(conn, state_table, "last_update_id")
+    offset = None
+    if last_update_id_value and str(last_update_id_value).isdigit():
+        offset = int(last_update_id_value) + 1
+
+    params: dict[str, object] = {"timeout": int(updates_timeout)}
+    if offset is not None:
+        params["offset"] = offset
+
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise RuntimeError(f"Telegram getUpdates failed: {payload!r}")
+
+    updates = payload.get("result") or []
+    if not isinstance(updates, list):
+        return {"updates_seen": 0, "subscribers_synced": 0, "reports_sent": 0}
+
+    subscribers_synced = 0
+    reports_sent = 0
+    max_update_id: int | None = None
+    report_cache: dict[date, str] = {}
+
+    def get_report_text(d: date) -> str:
+        if d not in report_cache:
+            rows, totals = fetch_metrics(conn, table=table, report_date=d, sources=sources)
+            report_cache[d] = format_message(d, rows, totals)
+        return report_cache[d]
+
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            max_update_id = update_id if max_update_id is None else max(max_update_id, update_id)
+
+        message = update.get("message") or update.get("edited_message")
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat") or {}
+        if not isinstance(chat, dict):
+            continue
+
+        # Only private chats (consistent with subscriber design)
+        if chat.get("type") != "private":
+            continue
+
+        text = message.get("text") or ""
+        if not isinstance(text, str):
+            continue
+
+        cmd, args = _parse_telegram_command(text)
+        if cmd not in {"/start", "/report"}:
+            continue
+
+        if cmd == "/start":
+            upsert_subscriber(conn, subscribers_table, chat=chat, started=True)
+            subscribers_synced += 1
+            if reply_start:
+                try:
+                    send_telegram_message(
+                        token,
+                        int(chat["id"]),
+                        "✅ Subscribed.\nKetik /report untuk ambil laporan sekarang.",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    print(f"[telegram] failed to reply /start: {e}", file=sys.stderr)
+            continue
+
+        # /report [YYYY-MM-DD]
+        if cmd == "/report" and reply_report:
+            requested_date = default_report_date
+            if args:
+                try:
+                    requested_date = parse_date(args[0])
+                except Exception:  # noqa: BLE001
+                    try:
+                        send_telegram_message(
+                            token,
+                            int(chat["id"]),
+                            "Format salah. Pakai: /report atau /report YYYY-MM-DD",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[telegram] failed to reply invalid /report: {e}", file=sys.stderr)
+                    continue
+
+            upsert_subscriber(conn, subscribers_table, chat=chat, started=False)
+            try:
+                send_telegram_message(token, int(chat["id"]), get_report_text(requested_date))
+                reports_sent += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[telegram] failed to reply /report: {e}", file=sys.stderr)
+
+    if max_update_id is not None:
+        set_bot_state(conn, state_table, "last_update_id", str(max_update_id))
+
+    return {
+        "updates_seen": len(updates),
+        "subscribers_synced": subscribers_synced,
+        "reports_sent": reports_sent,
+    }
+
 def build_carsome_select(
     conn,
     carsome_table: str,
@@ -552,8 +695,45 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--broadcast", action="store_true", help="Send to all subscribers who have /start the bot.")
     parser.add_argument("--sync-subscribers", action="store_true", help="Fetch /start subscribers from Telegram getUpdates.")
     parser.add_argument("--sync-only", action="store_true", help="Only sync subscribers, then exit.")
+    parser.add_argument(
+        "--handle-updates",
+        action="store_true",
+        help="Process Telegram updates and handle /start + /report (one-shot).",
+    )
+    parser.add_argument(
+        "--handle-only",
+        action="store_true",
+        help="Only handle Telegram updates (requires --handle-updates), then exit.",
+    )
+    parser.add_argument(
+        "--reply-start",
+        action="store_true",
+        help="When handling updates, reply to /start with a confirmation message.",
+    )
+    parser.add_argument(
+        "--reply-report",
+        action="store_true",
+        help="When handling updates, reply to /report by sending the report to the requesting chat.",
+    )
+    parser.add_argument(
+        "--poll",
+        action="store_true",
+        help="Run continuously (long-poll getUpdates) to respond to /start and /report instantly.",
+    )
+    parser.add_argument(
+        "--long-poll-timeout",
+        type=int,
+        default=25,
+        help="Seconds for Telegram long polling (only used with --poll).",
+    )
 
     args = parser.parse_args(argv)
+    if args.handle_only and not args.handle_updates:
+        parser.error("--handle-only requires --handle-updates")
+    if (args.reply_start or args.reply_report) and not args.handle_updates:
+        parser.error("--reply-start/--reply-report require --handle-updates")
+    if args.poll and not args.handle_updates:
+        parser.error("--poll requires --handle-updates")
     report_date = parse_date(args.date_str) if args.date_str else date.today()
 
     table = os.getenv("TB_UNIFIED", "cars_unified")
@@ -565,12 +745,40 @@ def main(argv: list[str] | None = None) -> int:
         print("Missing DB_USER/DB_PASSWORD/DB_NAME in environment/.env", file=sys.stderr)
         return 2
 
+    subscribers_table = os.getenv("TELEGRAM_SUBSCRIBERS_TABLE", get_default_subscribers_table())
+    state_table = os.getenv("TELEGRAM_STATE_TABLE", get_default_state_table())
+
+    if args.poll:
+        if args.handle_only is False:
+            parser.error("--poll is intended to be used with --handle-only (so it does not broadcast)")
+
+        try:
+            while True:
+                conn = psycopg2.connect(**db_config)
+                try:
+                    ensure_telegram_tables(conn, subscribers_table=subscribers_table, state_table=state_table)
+                    stats = handle_updates_from_telegram(
+                        conn,
+                        subscribers_table=subscribers_table,
+                        state_table=state_table,
+                        table=table,
+                        sources=sources,
+                        default_report_date=report_date,
+                        reply_start=args.reply_start,
+                        reply_report=args.reply_report,
+                        updates_timeout=max(0, int(args.long_poll_timeout)),
+                    )
+                finally:
+                    conn.close()
+
+                if args.dry_run or stats.get("reports_sent") or stats.get("subscribers_synced"):
+                    print(f"[telegram] handled updates: {stats}", file=sys.stderr)
+        except KeyboardInterrupt:
+            return 0
+
     conn = psycopg2.connect(**db_config)
     try:
-        subscribers_table = os.getenv("TELEGRAM_SUBSCRIBERS_TABLE", get_default_subscribers_table())
-        state_table = os.getenv("TELEGRAM_STATE_TABLE", get_default_state_table())
-
-        if args.sync_subscribers or args.broadcast:
+        if args.sync_subscribers or args.broadcast or args.handle_updates:
             ensure_telegram_tables(conn, subscribers_table=subscribers_table, state_table=state_table)
 
         if args.sync_subscribers:
@@ -578,6 +786,22 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run or args.sync_only:
                 print(f"[telegram] synced subscribers: {synced}", file=sys.stderr)
             if args.sync_only:
+                return 0
+
+        if args.handle_updates:
+            stats = handle_updates_from_telegram(
+                conn,
+                subscribers_table=subscribers_table,
+                state_table=state_table,
+                table=table,
+                sources=sources,
+                default_report_date=report_date,
+                reply_start=args.reply_start,
+                reply_report=args.reply_report,
+            )
+            if args.dry_run:
+                print(f"[telegram] handled updates: {stats}", file=sys.stderr)
+            if args.handle_only:
                 return 0
 
         rows, totals = fetch_metrics(conn, table=table, report_date=report_date, sources=sources)

@@ -629,15 +629,26 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
 
 
 def format_message(report_date: date, rows: list[dict], totals: dict) -> str:
+    def fmt_int(value: object) -> str:
+        try:
+            n = int(value)  # handles None/str/int
+        except Exception:  # noqa: BLE001
+            n = 0
+        return f"{n:,}".replace(",", ".")
+
     lines: list[str] = [report_date.strftime("%d-%b-%Y"), ""]
 
     for r in rows:
         label = str(r["source"]).upper()
-        lines.append(f"{label} : {int(r['today_count'])} / {int(r['all_time_count'])} record/s")
+        lines.append(
+            f"{label} : {fmt_int(r.get('today_count'))} / {fmt_int(r.get('all_time_count'))} record/s"
+        )
 
     lines.append("")
-    lines.append(f"TOTAL : {int(totals['total_today'])} / {int(totals['total_all'])} record/s")
-    lines.append(f"UNIQUE : {int(totals['unique_today'])} / {int(totals['unique_all'])} record/s")
+    lines.append(f"TOTAL : {fmt_int(totals.get('total_today'))} / {fmt_int(totals.get('total_all'))} record/s")
+    lines.append(
+        f"UNIQUE : {fmt_int(totals.get('unique_today'))} / {fmt_int(totals.get('unique_all'))} record/s"
+    )
     return "\n".join(lines)
 
 

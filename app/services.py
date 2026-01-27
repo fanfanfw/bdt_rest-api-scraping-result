@@ -406,18 +406,18 @@ async def get_price_vs_mileage_filtered(
         param_index = 1  
 
         if brand:
-            conditions.append(f"LOWER(c.brand) = LOWER(${param_index})")
-            values.append(brand)
+            conditions.append(f"c.brand = ${param_index}")
+            values.append(brand.strip().upper())
             param_index += 1
         
         if model:
-            conditions.append(f"LOWER(c.model) = LOWER(${param_index})")
-            values.append(model)
+            conditions.append(f"c.model = ${param_index}")
+            values.append(model.strip().upper())
             param_index += 1
         
         if variant:
-            conditions.append(f"LOWER(c.variant) = LOWER(${param_index})")
-            values.append(variant)
+            conditions.append(f"c.variant = ${param_index}")
+            values.append(variant.strip().upper())
             param_index += 1
         
         if year:
@@ -533,18 +533,18 @@ async def get_price_vs_mileage_total_count(
         param_index = 1  
 
         if brand:
-            conditions.append(f"LOWER(c.brand) = LOWER(${param_index})")
-            values.append(brand)
+            conditions.append(f"c.brand = ${param_index}")
+            values.append(brand.strip().upper())
             param_index += 1
         
         if model:
-            conditions.append(f"LOWER(c.model) = LOWER(${param_index})")
-            values.append(model)
+            conditions.append(f"c.model = ${param_index}")
+            values.append(model.strip().upper())
             param_index += 1
         
         if variant:
-            conditions.append(f"LOWER(c.variant) = LOWER(${param_index})")
-            values.append(variant)
+            conditions.append(f"c.variant = ${param_index}")
+            values.append(variant.strip().upper())
             param_index += 1
         
         if year:

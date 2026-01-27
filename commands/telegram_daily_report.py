@@ -400,7 +400,7 @@ def handle_updates_from_telegram(
                     send_telegram_message(
                         token,
                         int(chat["id"]),
-                        "✅ Subscribed.\nKetik /report untuk ambil laporan sekarang.",
+                        "✅ Subscribed.\nType /report to get the latest report now.",
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"[telegram] failed to reply /start: {e}", file=sys.stderr)

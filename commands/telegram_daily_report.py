@@ -149,6 +149,7 @@ def ensure_telegram_tables(conn, subscribers_table: str, state_table: str) -> No
                 first_name TEXT NULL,
                 last_name TEXT NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                is_approved BOOLEAN NOT NULL DEFAULT FALSE,
                 started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TIMESTAMP NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -156,6 +157,8 @@ def ensure_telegram_tables(conn, subscribers_table: str, state_table: str) -> No
             )
             """
         )
+        # Backward-compatible schema evolution for existing tables
+        cur.execute(f"ALTER TABLE {subscribers_table} ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {state_table} (
@@ -400,7 +403,7 @@ def handle_updates_from_telegram(
                     send_telegram_message(
                         token,
                         int(chat["id"]),
-                        "✅ Subscribed.",
+                        f"✅ Request received.\nChat ID: {int(chat['id'])}\nSend this Chat ID to admin for approval.",
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"[telegram] failed to reply /start: {e}", file=sys.stderr)
@@ -639,18 +642,47 @@ def format_message(report_date: date, rows: list[dict], totals: dict) -> str:
 
 
 def get_subscriber_chat_ids(conn, subscribers_table: str) -> list[int]:
+    return get_subscriber_chat_ids_filtered(conn, subscribers_table, approved_only=False)
+
+
+def get_subscriber_chat_ids_filtered(conn, subscribers_table: str, *, approved_only: bool) -> list[int]:
+    subscribers_table = validate_table_name(subscribers_table)
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        where = "WHERE is_active = TRUE"
+        if approved_only:
+            where += " AND is_approved = TRUE"
+        cur.execute(f"SELECT chat_id FROM {subscribers_table} {where} ORDER BY chat_id")
+        rows = cur.fetchall() or []
+    return [int(r["chat_id"]) for r in rows if r.get("chat_id") is not None]
+
+
+def set_subscriber_approval(conn, subscribers_table: str, chat_id: int, *, approved: bool) -> bool:
+    subscribers_table = validate_table_name(subscribers_table)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {subscribers_table}
+            SET is_approved = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = %s
+            """,
+            (bool(approved), int(chat_id)),
+        )
+        updated = cur.rowcount
+    conn.commit()
+    return updated > 0
+
+
+def list_subscribers(conn, subscribers_table: str) -> list[dict]:
     subscribers_table = validate_table_name(subscribers_table)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             f"""
-            SELECT chat_id
+            SELECT chat_id, username, first_name, last_name, is_active, is_approved, started_at, last_seen_at
             FROM {subscribers_table}
-            WHERE is_active = TRUE
             ORDER BY chat_id
             """
         )
-        rows = cur.fetchall() or []
-    return [int(r["chat_id"]) for r in rows if r.get("chat_id") is not None]
+        return cur.fetchall() or []
 
 
 def send_telegram_message(token: str, chat_id: int, text: str) -> None:
@@ -693,6 +725,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", dest="date_str", help="Report date in YYYY-MM-DD (default: today).")
     parser.add_argument("--dry-run", action="store_true", help="Print message only; do not send to Telegram.")
     parser.add_argument("--broadcast", action="store_true", help="Send to all subscribers who have /start the bot.")
+    parser.add_argument("--broadcast-approved", action="store_true", help="Send to approved subscribers only.")
     parser.add_argument("--sync-subscribers", action="store_true", help="Fetch /start subscribers from Telegram getUpdates.")
     parser.add_argument("--sync-only", action="store_true", help="Only sync subscribers, then exit.")
     parser.add_argument(
@@ -726,6 +759,23 @@ def main(argv: list[str] | None = None) -> int:
         default=25,
         help="Seconds for Telegram long polling (only used with --poll).",
     )
+    parser.add_argument(
+        "--approve-chat-id",
+        action="append",
+        type=int,
+        help="Approve a chat_id for broadcast (can be provided multiple times).",
+    )
+    parser.add_argument(
+        "--disapprove-chat-id",
+        action="append",
+        type=int,
+        help="Disapprove a chat_id for broadcast (can be provided multiple times).",
+    )
+    parser.add_argument(
+        "--list-subscribers",
+        action="store_true",
+        help="List subscribers from DB (chat_id, approval, etc).",
+    )
 
     args = parser.parse_args(argv)
     if args.handle_only and not args.handle_updates:
@@ -734,6 +784,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--reply-start/--reply-report require --handle-updates")
     if args.poll and not args.handle_updates:
         parser.error("--poll requires --handle-updates")
+    if args.broadcast and args.broadcast_approved:
+        parser.error("Use only one of --broadcast or --broadcast-approved")
     report_date = parse_date(args.date_str) if args.date_str else date.today()
 
     table = os.getenv("TB_UNIFIED", "cars_unified")
@@ -778,7 +830,15 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = psycopg2.connect(**db_config)
     try:
-        if args.sync_subscribers or args.broadcast or args.handle_updates:
+        if (
+            args.sync_subscribers
+            or args.broadcast
+            or args.broadcast_approved
+            or args.handle_updates
+            or args.list_subscribers
+            or args.approve_chat_id
+            or args.disapprove_chat_id
+        ):
             ensure_telegram_tables(conn, subscribers_table=subscribers_table, state_table=state_table)
 
         if args.sync_subscribers:
@@ -787,6 +847,30 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[telegram] synced subscribers: {synced}", file=sys.stderr)
             if args.sync_only:
                 return 0
+
+        if args.approve_chat_id:
+            for cid in args.approve_chat_id:
+                ok = set_subscriber_approval(conn, subscribers_table, cid, approved=True)
+                print(f"[telegram] approve chat_id={cid}: {'OK' if ok else 'NOT_FOUND'}", file=sys.stderr)
+
+        if args.disapprove_chat_id:
+            for cid in args.disapprove_chat_id:
+                ok = set_subscriber_approval(conn, subscribers_table, cid, approved=False)
+                print(f"[telegram] disapprove chat_id={cid}: {'OK' if ok else 'NOT_FOUND'}", file=sys.stderr)
+
+        if args.list_subscribers:
+            rows = list_subscribers(conn, subscribers_table)
+            for r in rows:
+                chat_id = r.get("chat_id")
+                username = r.get("username") or ""
+                first_name = r.get("first_name") or ""
+                last_name = r.get("last_name") or ""
+                is_active = bool(r.get("is_active"))
+                is_approved = bool(r.get("is_approved"))
+                print(
+                    f"{chat_id}\tactive={is_active}\tapproved={is_approved}\t{username}\t{first_name}\t{last_name}"
+                )
+            return 0
 
         if args.handle_updates:
             stats = handle_updates_from_telegram(
@@ -818,6 +902,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ensure_telegram_tables(conn, subscribers_table=subscribers_table, state_table=state_table)
             chat_ids = get_subscriber_chat_ids(conn, subscribers_table=subscribers_table)
+        finally:
+            conn.close()
+        send_telegram(message, chat_ids=chat_ids)
+    elif args.broadcast_approved:
+        conn = psycopg2.connect(**db_config)
+        try:
+            ensure_telegram_tables(conn, subscribers_table=subscribers_table, state_table=state_table)
+            chat_ids = get_subscriber_chat_ids_filtered(conn, subscribers_table=subscribers_table, approved_only=True)
         finally:
             conn.close()
         send_telegram(message, chat_ids=chat_ids)

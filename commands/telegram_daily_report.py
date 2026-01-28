@@ -634,7 +634,7 @@ def format_message(report_date: date, rows: list[dict], totals: dict) -> str:
             n = int(value)  # handles None/str/int
         except Exception:  # noqa: BLE001
             n = 0
-        return f"{n:,}".replace(",", ".")
+        return f"{n:,}"
 
     lines: list[str] = [report_date.strftime("%d-%b-%Y"), ""]
 

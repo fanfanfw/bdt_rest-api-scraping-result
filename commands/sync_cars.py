@@ -6,8 +6,10 @@ Sync car data from remote scraping database to unified local database.
 Can be run independently without Django management commands.
 
 Usage:
-    python sync_cars.py                     # Today's data only
+    python sync_cars.py                     # Today's data (by last_scraped_at)
     python sync_cars.py --days 7            # Last 7 days
+    python sync_cars.py --hours 6           # Last 6 hours
+    python sync_cars.py --since 2026-02-06T00:00:00  # Since timestamp (local time)
     python sync_cars.py --days 30           # Last 30 days
     python sync_cars.py --all               # All data
     python sync_cars.py today               # Quick today sync
@@ -139,30 +141,61 @@ class CarDataSyncService:
             return brand_str
     
     
-    async def fetch_source_data(self, table_name: str, days_back: Optional[int] = None, 
-                               fetch_all: bool = False) -> List[Dict[str, Any]]:
+    async def fetch_source_data(
+        self,
+        table_name: str,
+        days_back: Optional[int] = None,
+        hours_back: Optional[int] = None,
+        since: Optional[datetime] = None,
+        fetch_all: bool = False,
+        use_ads_date_for_today: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Fetch data from source database"""
         conn = None
         try:
             conn = await asyncpg.connect(**self.config.SOURCE_DB)
             
             base_query = f"SELECT * FROM public.{table_name}"
-            
+
+            query_args: List[Any] = []
             if fetch_all:
                 query = f"{base_query} ORDER BY last_scraped_at DESC"
-            elif days_back:
+            elif since:
                 query = f"""
-                    {base_query} 
-                    WHERE last_scraped_at >= (NOW() - INTERVAL '{days_back} days')
+                    {base_query}
+                    WHERE last_scraped_at >= $1
                     ORDER BY last_scraped_at DESC
                 """
+                query_args = [since]
+            elif hours_back:
+                query = f"""
+                    {base_query}
+                    WHERE last_scraped_at >= (NOW() - ($1 * INTERVAL '1 hour'))
+                    ORDER BY last_scraped_at DESC
+                """
+                query_args = [hours_back]
+            elif days_back:
+                query = f"""
+                    {base_query}
+                    WHERE last_scraped_at >= (NOW() - ($1 * INTERVAL '1 day'))
+                    ORDER BY last_scraped_at DESC
+                """
+                query_args = [days_back]
             else:
-                # Default: today's data
-                today = datetime.now().strftime('%Y-%m-%d')
-                query = f"{base_query} WHERE information_ads_date = '{today}'"
+                if use_ads_date_for_today:
+                    query = f"""
+                        {base_query}
+                        WHERE information_ads_date = CURRENT_DATE
+                    """
+                else:
+                    query = f"""
+                        {base_query}
+                        WHERE last_scraped_at >= date_trunc('day', NOW())
+                        ORDER BY last_scraped_at DESC
+                    """
             
             logger.info(f"🔍 Fetching {table_name} data...")
-            result = await conn.fetch(query)
+            result = await conn.fetch(query, *query_args)
             return [dict(row) for row in result]
             
         except Exception as e:
@@ -172,33 +205,54 @@ class CarDataSyncService:
             if conn:
                 await conn.close()
     
-    async def fetch_price_history_data(self, table_name: str, days_back: Optional[int] = None,
-                                     fetch_all: bool = False) -> List[Dict[str, Any]]:
+    async def fetch_price_history_data(
+        self,
+        table_name: str,
+        days_back: Optional[int] = None,
+        hours_back: Optional[int] = None,
+        since: Optional[datetime] = None,
+        fetch_all: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Fetch price history data from source database"""
         conn = None
         try:
             conn = await asyncpg.connect(**self.config.SOURCE_DB)
             
             base_query = f"SELECT * FROM public.{table_name}"
-            
+
+            query_args: List[Any] = []
             if fetch_all:
                 query = f"{base_query} ORDER BY changed_at DESC"
-            elif days_back:
+            elif since:
                 query = f"""
-                    {base_query} 
-                    WHERE changed_at >= (NOW() - INTERVAL '{days_back} days')
+                    {base_query}
+                    WHERE changed_at >= $1
                     ORDER BY changed_at DESC
                 """
-            else:
-                # Default: 30 days
+                query_args = [since]
+            elif hours_back:
                 query = f"""
-                    {base_query} 
+                    {base_query}
+                    WHERE changed_at >= (NOW() - ($1 * INTERVAL '1 hour'))
+                    ORDER BY changed_at DESC
+                """
+                query_args = [hours_back]
+            elif days_back:
+                query = f"""
+                    {base_query}
+                    WHERE changed_at >= (NOW() - ($1 * INTERVAL '1 day'))
+                    ORDER BY changed_at DESC
+                """
+                query_args = [days_back]
+            else:
+                query = f"""
+                    {base_query}
                     WHERE changed_at >= (NOW() - INTERVAL '30 days')
                     ORDER BY changed_at DESC
                 """
             
             logger.info(f"📈 Fetching {table_name} price history...")
-            result = await conn.fetch(query)
+            result = await conn.fetch(query, *query_args)
             return [dict(row) for row in result]
             
         except Exception as e:
@@ -246,10 +300,10 @@ class CarDataSyncService:
 
         return normalized
     
-    def sync_to_target_database(self, normalized_data: List[Dict[str, Any]]) -> Tuple[int, int, int, List[str], List[str]]:
+    def sync_to_target_database(self, normalized_data: List[Dict[str, Any]]) -> Tuple[int, int, int]:
         """Sync normalized data to target database using efficient UPSERT approach"""
         if not normalized_data:
-            return 0, 0, 0, [], []
+            return 0, 0, 0
             
         inserted = 0
         updated = 0
@@ -291,7 +345,7 @@ class CarDataSyncService:
         
         if not valid_data:
             logger.warning("❌ No valid records to process")
-            return 0, 0, invalid_count, [], []
+            return 0, 0, invalid_count
         
         logger.info(f"✅ {len(valid_data)} valid records will be processed")
         
@@ -387,30 +441,21 @@ class CarDataSyncService:
             # Commit the UPSERT first
             conn.commit()
 
-            # Collect valid listing_urls that were successfully processed
-            valid_listing_urls = [data['listing_url'] for data in valid_data]
-            valid_listing_ids = [
-                data["listing_id"] for data in valid_data
-                if data.get("listing_id") is not None
-            ]
-
         except Exception as e:
             logger.error(f"❌ Database sync error: {e}")
             if conn:
                 conn.rollback()
-            return 0, 0, invalid_count, [], []
+            return 0, 0, invalid_count
         finally:
             if conn:
                 conn.close()
 
-        return inserted, updated, invalid_count, valid_listing_urls, valid_listing_ids
+        return inserted, updated, invalid_count
     
     def sync_price_history_direct(
         self,
         price_data: List[Dict[str, Any]],
         source: str,
-        valid_listing_urls: List[str],
-        valid_listing_ids: List[str],
     ) -> Tuple[int, int, int]:
         """Direct UPSERT price history without matching"""
         if not price_data:
@@ -432,10 +477,6 @@ class CarDataSyncService:
                 return value == 0
             return not value
 
-        # Convert valid listing references to sets for faster lookup
-        valid_urls_set = set(valid_listing_urls)
-        valid_ids_set = set(valid_listing_ids)
-
         for data in price_data:
             # Required fields for price_history: listing_id, listing_url, old_price, new_price, changed_at
             if (is_empty_field(data.get('listing_url')) or
@@ -444,16 +485,6 @@ class CarDataSyncService:
                 is_empty_field(data.get('new_price')) or
                 is_empty_field(data.get('changed_at'))):
                 skipped += 1
-                continue
-
-            # Check if listing exists in valid cars_unified records
-            if data.get('listing_url') not in valid_urls_set:
-                skipped += 1
-                logger.debug(f"⚠️ Skipped price history - listing_url not in cars_unified: {data.get('listing_url')}")
-                continue
-            if str(data.get("listing_id")) not in valid_ids_set:
-                skipped += 1
-                logger.debug(f"⚠️ Skipped price history - listing_id not in cars_unified: {data.get('listing_id')}")
                 continue
 
             valid_data.append(data)
@@ -467,7 +498,27 @@ class CarDataSyncService:
             conn = psycopg2.connect(**self.config.TARGET_DB)
             cur = conn.cursor(cursor_factory=RealDictCursor)
             
-            logger.info(f"📈 Direct UPSERT for {len(valid_data)} {source} price history records...")
+            # Filter out price history for listings that do not exist in cars_unified (in the target DB),
+            # so incremental sync remains correct even when the current run only syncs a subset of cars.
+            listing_urls = sorted({row["listing_url"] for row in valid_data})
+            existing_urls = set()
+            chunk_size = 10000
+            for i in range(0, len(listing_urls), chunk_size):
+                chunk = listing_urls[i : i + chunk_size]
+                cur.execute(
+                    "SELECT listing_url FROM cars_unified WHERE source = %s AND listing_url = ANY(%s::text[])",
+                    (source, chunk),
+                )
+                existing_urls.update(row["listing_url"] for row in cur.fetchall())
+
+            filtered_data = [row for row in valid_data if row["listing_url"] in existing_urls]
+            skipped += len(valid_data) - len(filtered_data)
+
+            if not filtered_data:
+                logger.warning(f"❌ No valid {source} price history records to process after cars_unified filter")
+                return 0, 0, skipped
+
+            logger.info(f"📈 Direct UPSERT for {len(filtered_data)} {source} price history records...")
             
             # Bulk UPSERT using PostgreSQL ON CONFLICT (without created_at)
             upsert_query = """
@@ -484,7 +535,7 @@ class CarDataSyncService:
             """
             
             values = []
-            for data in valid_data:
+            for data in filtered_data:
                 values.append((
                     source,
                     str(data["listing_id"]) if data.get("listing_id") is not None else None,
@@ -527,12 +578,33 @@ class CarDataSyncService:
         
         return inserted, updated, skipped
     
-    async def sync_all_data(self, days_back: Optional[int] = None, 
-                          fetch_all: bool = False) -> Dict[str, Any]:
+    async def sync_all_data(
+        self,
+        days_back: Optional[int] = None,
+        hours_back: Optional[int] = None,
+        since: Optional[datetime] = None,
+        fetch_all: bool = False,
+        use_ads_date_for_today: bool = False,
+    ) -> Dict[str, Any]:
         """Main sync method with proper sequence"""
         
         logger.info("🚀 Starting unified car data synchronization...")
-        logger.info(f"📅 Mode: {'All data' if fetch_all else f'{days_back} days' if days_back else 'Today only'}")
+        if fetch_all:
+            mode_label = "All data"
+        elif since:
+            mode_label = f"Since {since.isoformat()}"
+        elif hours_back:
+            mode_label = f"Last {hours_back} hours"
+        elif days_back:
+            mode_label = f"Last {days_back} days"
+        else:
+            mode_label = "Today only"
+            if use_ads_date_for_today:
+                mode_label += " (information_ads_date)"
+            else:
+                mode_label += " (last_scraped_at)"
+
+        logger.info(f"📅 Mode: {mode_label}")
         
         try:
             # STEP 1: No need to load mappings - fill scripts will handle it
@@ -541,8 +613,22 @@ class CarDataSyncService:
             # STEP 2: Fetch car data from both sources
             logger.info("📡 Fetching car data from both sources...")
             carlistmy_data, mudahmy_data = await asyncio.gather(
-                self.fetch_source_data('cars_scrap_carlistmy', days_back, fetch_all),
-                self.fetch_source_data('cars_scrap_mudahmy', days_back, fetch_all)
+                self.fetch_source_data(
+                    'cars_scrap_carlistmy',
+                    days_back=days_back,
+                    hours_back=hours_back,
+                    since=since,
+                    fetch_all=fetch_all,
+                    use_ads_date_for_today=use_ads_date_for_today,
+                ),
+                self.fetch_source_data(
+                    'cars_scrap_mudahmy',
+                    days_back=days_back,
+                    hours_back=hours_back,
+                    since=since,
+                    fetch_all=fetch_all,
+                    use_ads_date_for_today=use_ads_date_for_today,
+                ),
             )
             
             logger.info(f"📊 CarlistMY data: {len(carlistmy_data)} records")
@@ -556,9 +642,8 @@ class CarDataSyncService:
             
             # STEP 4: Sync car data using efficient UPSERT (without cars_standard_id and category_id)
             logger.info(f"💾 Syncing {len(all_normalized_data)} car records to target database...")
-            car_inserted, car_updated, car_skipped, valid_listing_urls, valid_listing_ids = self.sync_to_target_database(all_normalized_data)
+            car_inserted, car_updated, car_skipped = self.sync_to_target_database(all_normalized_data)
             logger.info(f"✅ Car data UPSERT completed: {car_inserted} inserted, {car_updated} updated, {car_skipped} skipped")
-            logger.info(f"📋 Valid listing URLs collected: {len(valid_listing_urls)} records")
             
             # STEP 5: Sync price history FIRST (before fill scripts)
             price_carlistmy_inserted = 0
@@ -567,37 +652,41 @@ class CarDataSyncService:
             price_mudahmy_inserted = 0
             price_mudahmy_updated = 0
             price_mudahmy_not_found = 0
-            
-            if car_inserted > 0 or car_updated > 0:
-                logger.info("📈 Fetching price history data...")
-                carlistmy_prices, mudahmy_prices = await asyncio.gather(
-                    self.fetch_price_history_data('price_history_scrap_carlistmy', days_back, fetch_all),
-                    self.fetch_price_history_data('price_history_scrap_mudahmy', days_back, fetch_all)
-                )
-                
-                logger.info(f"📈 CarlistMY price history: {len(carlistmy_prices)} records")
-                logger.info(f"📈 MudahMY price history: {len(mudahmy_prices)} records")
-                
-                # Sync price history using direct UPSERT with valid URL filtering
-                if len(carlistmy_prices) > 0:
-                    price_carlistmy_inserted, price_carlistmy_updated, price_carlistmy_not_found = self.sync_price_history_direct(
-                        carlistmy_prices,
-                        'carlistmy',
-                        valid_listing_urls,
-                        valid_listing_ids,
-                    )
-                    logger.info(f"✅ CarlistMY price history: {price_carlistmy_inserted} inserted, {price_carlistmy_updated} updated, {price_carlistmy_not_found} skipped")
 
-                if len(mudahmy_prices) > 0:
-                    price_mudahmy_inserted, price_mudahmy_updated, price_mudahmy_not_found = self.sync_price_history_direct(
-                        mudahmy_prices,
-                        'mudahmy',
-                        valid_listing_urls,
-                        valid_listing_ids,
-                    )
-                    logger.info(f"✅ MudahMY price history: {price_mudahmy_inserted} inserted, {price_mudahmy_updated} updated, {price_mudahmy_not_found} skipped")
-            else:
-                logger.info("⏭️ No car data changes, skipping price history sync")
+            logger.info("📈 Fetching price history data...")
+            carlistmy_prices, mudahmy_prices = await asyncio.gather(
+                self.fetch_price_history_data(
+                    'price_history_scrap_carlistmy',
+                    days_back=days_back,
+                    hours_back=hours_back,
+                    since=since,
+                    fetch_all=fetch_all,
+                ),
+                self.fetch_price_history_data(
+                    'price_history_scrap_mudahmy',
+                    days_back=days_back,
+                    hours_back=hours_back,
+                    since=since,
+                    fetch_all=fetch_all,
+                ),
+            )
+
+            logger.info(f"📈 CarlistMY price history: {len(carlistmy_prices)} records")
+            logger.info(f"📈 MudahMY price history: {len(mudahmy_prices)} records")
+
+            if len(carlistmy_prices) > 0:
+                price_carlistmy_inserted, price_carlistmy_updated, price_carlistmy_not_found = self.sync_price_history_direct(
+                    carlistmy_prices,
+                    'carlistmy',
+                )
+                logger.info(f"✅ CarlistMY price history: {price_carlistmy_inserted} inserted, {price_carlistmy_updated} updated, {price_carlistmy_not_found} skipped")
+
+            if len(mudahmy_prices) > 0:
+                price_mudahmy_inserted, price_mudahmy_updated, price_mudahmy_not_found = self.sync_price_history_direct(
+                    mudahmy_prices,
+                    'mudahmy',
+                )
+                logger.info(f"✅ MudahMY price history: {price_mudahmy_inserted} inserted, {price_mudahmy_updated} updated, {price_mudahmy_not_found} skipped")
             
             # STEP 6: Fill cars_standard_id only (skip category_id since it will be removed)
             cars_standard_updated = 0
@@ -713,7 +802,18 @@ async def main():
     parser.add_argument('mode', nargs='?', choices=['today', 'week', 'month', 'all-data'], 
                        help='Quick sync mode')
     parser.add_argument('--days', type=int, help='Number of days back to sync')
+    parser.add_argument('--hours', type=int, help='Number of hours back to sync')
+    parser.add_argument(
+        '--since',
+        type=str,
+        help="Sync records since this ISO timestamp (e.g. 2026-02-06T00:00:00). Uses last_scraped_at/changed_at.",
+    )
     parser.add_argument('--all', action='store_true', help='Sync all data')
+    parser.add_argument(
+        '--use-ads-date',
+        action='store_true',
+        help="For the default 'today' mode, filter by information_ads_date instead of last_scraped_at.",
+    )
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     
     args = parser.parse_args()
@@ -724,6 +824,8 @@ async def main():
     
     # Determine sync parameters
     days_back = None
+    hours_back = None
+    since = None
     fetch_all = False
     
     if args.mode:
@@ -737,12 +839,31 @@ async def main():
             fetch_all = True
     elif args.all:
         fetch_all = True
+    elif args.since:
+        try:
+            since_raw = args.since.strip().replace("Z", "+00:00")
+            since = datetime.fromisoformat(since_raw)
+        except Exception as exc:
+            print(f"❌ Invalid --since value: {args.since} ({exc})", file=sys.stderr)
+            sys.exit(2)
+    elif args.hours:
+        hours_back = args.hours
     elif args.days:
         days_back = args.days
     
     # Validation
-    if fetch_all and days_back:
-        print("❌ Cannot use both --all and --days together")
+    selected = sum(
+        1
+        for value in (
+            fetch_all,
+            days_back is not None,
+            hours_back is not None,
+            since is not None,
+        )
+        if value
+    )
+    if selected > 1:
+        print("❌ Cannot combine --all/--days/--hours/--since together", file=sys.stderr)
         sys.exit(1)
     
     # Display configuration
@@ -750,10 +871,17 @@ async def main():
     print("-" * 40)
     if fetch_all:
         print("📅 Mode: Sync ALL data")
+    elif since:
+        print(f"📅 Mode: Sync since {since.isoformat()}")
+    elif hours_back:
+        print(f"📅 Mode: Sync last {hours_back} hours")
     elif days_back:
         print(f"📅 Mode: Sync last {days_back} days")
     else:
-        print("📅 Mode: Sync today's data only")
+        if args.use_ads_date:
+            print("📅 Mode: Sync today only (information_ads_date)")
+        else:
+            print("📅 Mode: Sync today only (last_scraped_at)")
     
     # Initialize config and display database settings
     config = DatabaseConfig()
@@ -766,7 +894,10 @@ async def main():
         
         summary = await service.sync_all_data(
             days_back=days_back,
-            fetch_all=fetch_all
+            hours_back=hours_back,
+            since=since,
+            fetch_all=fetch_all,
+            use_ads_date_for_today=args.use_ads_date,
         )
         
         display_summary(summary)

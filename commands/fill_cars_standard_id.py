@@ -69,8 +69,8 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
                 model_match = True
             elif candidate['model_raw'] and candidate['model_raw'].strip().upper() == model.strip().upper():
                 model_match = True
-            elif candidate['model_raw2'] and candidate['model_raw2'].strip().upper() == variant.strip().upper():
-                variant_match = True
+            elif candidate['model_raw2'] and candidate['model_raw2'].strip().upper() == model.strip().upper():
+                model_match = True
 
             if not model_match:
                 continue
@@ -139,7 +139,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
 
         # Ambil semua record yang cars_standard_id nya NULL dengan LIMIT untuk processing batch
         cur.execute("""
-            SELECT id, listing_url, brand, model_group, model, variant
+            SELECT id, listing_url, brand, model, variant
             FROM cars_unified
             WHERE source = %s
             AND cars_standard_id IS NULL
@@ -175,7 +175,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
                 record_id = record['id']
                 listing_url = record['listing_url']
                 brand = record['brand']
-                model_group = record['model_group']
+                model_group = "NO MODEL GROUP"
                 model = record['model']
                 variant = record['variant']
 

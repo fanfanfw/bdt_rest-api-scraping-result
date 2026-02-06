@@ -1,5 +1,5 @@
 -- PostgreSQL DDL Script for Car Market Price Tables
--- Generated based on Django models (without created_at, updated_at, category_id)
+-- Generated based on Django models (adapted for db_cars_scrap source; includes created_at)
 -- Date: 2025-01-11
 
 -- =============================================
@@ -44,13 +44,15 @@ CREATE TABLE IF NOT EXISTS cars_unified (
     -- Source information
     source VARCHAR(20) NOT NULL CHECK (source IN ('carlistmy', 'mudahmy')),
     listing_url TEXT NOT NULL,
+    listing_id TEXT NULL,
     
     -- Car details (normalized from both sources)
     condition VARCHAR(50) NULL,
     brand VARCHAR(100) NOT NULL,
-    model_group VARCHAR(100) NULL,
     model VARCHAR(100) NOT NULL,
     variant VARCHAR(100) NULL,
+    series VARCHAR(100) NULL,
+    type VARCHAR(100) NULL,
     
     -- Car specifications
     year INTEGER NULL,
@@ -68,15 +70,15 @@ CREATE TABLE IF NOT EXISTS cars_unified (
     
     -- Additional info
     information_ads TEXT NULL,
-    images TEXT NULL, -- JSON field for image URLs
+    images TEXT[] NULL,
     
     -- Status tracking
     status VARCHAR(20) NOT NULL DEFAULT 'active',
-    ads_tag VARCHAR(50) NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     
     -- Timestamps
-    last_scraped_at TIMESTAMP NULL,
+    created_at TIMESTAMPTZ NULL,
+    last_scraped_at TIMESTAMPTZ NULL,
     version INTEGER NOT NULL DEFAULT 1,
     sold_at TIMESTAMP NULL,
     last_status_check TIMESTAMP NULL,
@@ -109,6 +111,8 @@ CREATE TABLE IF NOT EXISTS price_history_unified (
     source VARCHAR(20) NOT NULL DEFAULT 'carlistmy' 
         CHECK (source IN ('carlistmy', 'mudahmy')),
     
+    listing_id TEXT NULL,
+
     -- Price tracking
     old_price INTEGER NULL,
     new_price INTEGER NOT NULL,
@@ -117,7 +121,7 @@ CREATE TABLE IF NOT EXISTS price_history_unified (
     listing_url TEXT NOT NULL,
     
     -- Timestamps
-    changed_at TIMESTAMP NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL,
     
     -- Constraints
     CONSTRAINT unique_listing_changed UNIQUE (listing_url, changed_at)

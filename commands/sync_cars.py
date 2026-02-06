@@ -64,7 +64,7 @@ class DatabaseConfig:
         self.SOURCE_DB = {
             'host': os.getenv('SOURCE_DB_HOST', '127.0.0.1'),
             'port': int(os.getenv('SOURCE_DB_PORT', 5432)),
-            'database': os.getenv('SOURCE_DB_NAME', 'db_scrap_new'),
+            'database': os.getenv('SOURCE_DB_NAME', 'db_cars_scrap'),
             'user': os.getenv('SOURCE_DB_USER', 'fanfan'),
             'password': os.getenv('SOURCE_DB_PASSWORD', 'cenanun')
         }
@@ -210,13 +210,20 @@ class CarDataSyncService:
     
     def normalize_car_data(self, data: Dict[str, Any], source: str) -> Dict[str, Any]:
         """Normalize car data from different sources with improved field cleaning"""
+        images = data.get("images")
+        if images is not None and isinstance(images, str):
+            images = [images]
+
         normalized = {
             'source': source,
+            'listing_id': str(data.get('listing_id')) if data.get('listing_id') is not None else None,
             'listing_url': data['listing_url'],
             'condition': self.normalize_field(data.get('condition')),
             'brand': self.normalize_field(data.get('brand')),
             'model': self.normalize_field(data.get('model')),
             'variant': self.normalize_field(data.get('variant')),
+            'series': self.normalize_field(data.get('series')),
+            'type': self.normalize_field(data.get('type')),
             'year': data.get('year'),
             'mileage': data.get('mileage'),
             'transmission': self.normalize_field(data.get('transmission')),
@@ -226,10 +233,10 @@ class CarDataSyncService:
             'price': data.get('price'),
             'location': self.normalize_field(data.get('location')),
             'information_ads': data.get('information_ads'),
-            'images': data.get('images'),
+            'images': images,
             'status': data.get('status', 'active'),
-            'ads_tag': data.get('ads_tag'),
             'is_deleted': data.get('is_deleted', False),
+            'created_at': data.get('created_at'),
             'last_scraped_at': data.get('last_scraped_at'),
             'version': data.get('version', 1),
             'sold_at': data.get('sold_at'),
@@ -237,18 +244,12 @@ class CarDataSyncService:
             'information_ads_date': data.get('information_ads_date'),
         }
 
-        # Handle model_group differences with normalization
-        if source == 'carlistmy':
-            normalized['model_group'] = self.normalize_field(data.get('model_group'))
-        elif source == 'mudahmy':
-            normalized['model_group'] = self.normalize_field(data.get('model_group'))
-
         return normalized
     
-    def sync_to_target_database(self, normalized_data: List[Dict[str, Any]]) -> Tuple[int, int, int, List[str]]:
+    def sync_to_target_database(self, normalized_data: List[Dict[str, Any]]) -> Tuple[int, int, int, List[str], List[str]]:
         """Sync normalized data to target database using efficient UPSERT approach"""
         if not normalized_data:
-            return 0, 0, 0, []
+            return 0, 0, 0, [], []
             
         inserted = 0
         updated = 0
@@ -269,8 +270,8 @@ class CarDataSyncService:
                 return not value
 
             # Check REQUIRED fields - skip record if any is empty
-            # Required: brand, model_group, model, variant, price, year, mileage
-            required_fields = ['brand', 'model_group', 'model', 'variant', 'price', 'year', 'mileage']
+            # Required: brand, model, variant, price, year, mileage
+            required_fields = ['brand', 'model', 'variant', 'price', 'year', 'mileage']
             skip_record = False
 
             for field in required_fields:
@@ -286,11 +287,11 @@ class CarDataSyncService:
             valid_data.append(data)
         
         if invalid_count > 0:
-            logger.warning(f"❌ {invalid_count} records skipped due to missing required fields (brand/model_group/model/variant/price/year/mileage)")
+            logger.warning(f"❌ {invalid_count} records skipped due to missing required fields (brand/model/variant/price/year/mileage)")
         
         if not valid_data:
             logger.warning("❌ No valid records to process")
-            return 0, 0, invalid_count, []
+            return 0, 0, invalid_count, [], []
         
         logger.info(f"✅ {len(valid_data)} valid records will be processed")
         
@@ -309,19 +310,21 @@ class CarDataSyncService:
             # STEP 1: Bulk UPSERT using PostgreSQL ON CONFLICT (without created_at, updated_at)
             upsert_query = """
                 INSERT INTO cars_unified (
-                    source, listing_url, condition, brand, model_group, model, variant,
+                    source, listing_url, listing_id, condition, brand, model, variant, series, type,
                     year, mileage, transmission, seat_capacity, engine_cc, fuel_type, price,
-                    location, information_ads, images, status, ads_tag, is_deleted,
-                    last_scraped_at, version, sold_at, last_status_check, information_ads_date
+                    location, information_ads, images, status, is_deleted,
+                    created_at, last_scraped_at, version, sold_at, last_status_check, information_ads_date
                 ) VALUES %s
                 ON CONFLICT (source, listing_url)
                 DO UPDATE SET
                     listing_url = EXCLUDED.listing_url,
+                    listing_id = EXCLUDED.listing_id,
                     condition = EXCLUDED.condition,
                     brand = EXCLUDED.brand,
-                    model_group = EXCLUDED.model_group,
                     model = EXCLUDED.model,
                     variant = EXCLUDED.variant,
+                    series = EXCLUDED.series,
+                    type = EXCLUDED.type,
                     year = EXCLUDED.year,
                     mileage = EXCLUDED.mileage,
                     transmission = EXCLUDED.transmission,
@@ -333,8 +336,8 @@ class CarDataSyncService:
                     information_ads = EXCLUDED.information_ads,
                     images = EXCLUDED.images,
                     status = EXCLUDED.status,
-                    ads_tag = EXCLUDED.ads_tag,
                     is_deleted = EXCLUDED.is_deleted,
+                    created_at = COALESCE(cars_unified.created_at, EXCLUDED.created_at),
                     last_scraped_at = EXCLUDED.last_scraped_at,
                     version = EXCLUDED.version,
                     sold_at = EXCLUDED.sold_at,
@@ -346,12 +349,12 @@ class CarDataSyncService:
             values = []
             for data in valid_data:
                 values.append((
-                    data['source'], data['listing_url'], data['condition'],
-                    data['brand'], data['model_group'], data['model'], data['variant'],
+                    data['source'], data['listing_url'], data.get('listing_id'), data['condition'],
+                    data['brand'], data['model'], data['variant'], data.get('series'), data.get('type'),
                     data['year'], data['mileage'], data['transmission'], data['seat_capacity'],
                     data['engine_cc'], data['fuel_type'], data['price'], data['location'],
-                    data['information_ads'], data['images'], data['status'], data['ads_tag'],
-                    data['is_deleted'], data['last_scraped_at'], data['version'],
+                    data['information_ads'], data['images'], data['status'], data['is_deleted'],
+                    data.get('created_at'), data['last_scraped_at'], data['version'],
                     data['sold_at'], data['last_status_check'], data['information_ads_date']
                 ))
             
@@ -386,19 +389,29 @@ class CarDataSyncService:
 
             # Collect valid listing_urls that were successfully processed
             valid_listing_urls = [data['listing_url'] for data in valid_data]
+            valid_listing_ids = [
+                data["listing_id"] for data in valid_data
+                if data.get("listing_id") is not None
+            ]
 
         except Exception as e:
             logger.error(f"❌ Database sync error: {e}")
             if conn:
                 conn.rollback()
-            return 0, 0, invalid_count, []
+            return 0, 0, invalid_count, [], []
         finally:
             if conn:
                 conn.close()
 
-        return inserted, updated, invalid_count, valid_listing_urls
+        return inserted, updated, invalid_count, valid_listing_urls, valid_listing_ids
     
-    def sync_price_history_direct(self, price_data: List[Dict[str, Any]], source: str, valid_listing_urls: List[str]) -> Tuple[int, int, int]:
+    def sync_price_history_direct(
+        self,
+        price_data: List[Dict[str, Any]],
+        source: str,
+        valid_listing_urls: List[str],
+        valid_listing_ids: List[str],
+    ) -> Tuple[int, int, int]:
         """Direct UPSERT price history without matching"""
         if not price_data:
             return 0, 0, 0
@@ -419,22 +432,28 @@ class CarDataSyncService:
                 return value == 0
             return not value
 
-        # Convert valid_listing_urls to set for faster lookup
+        # Convert valid listing references to sets for faster lookup
         valid_urls_set = set(valid_listing_urls)
+        valid_ids_set = set(valid_listing_ids)
 
         for data in price_data:
-            # Required fields for price_history: listing_url, old_price, new_price, changed_at
+            # Required fields for price_history: listing_id, listing_url, old_price, new_price, changed_at
             if (is_empty_field(data.get('listing_url')) or
+                is_empty_field(data.get('listing_id')) or
                 is_empty_field(data.get('old_price')) or
                 is_empty_field(data.get('new_price')) or
                 is_empty_field(data.get('changed_at'))):
                 skipped += 1
                 continue
 
-            # Check if listing_url exists in valid cars_unified records
+            # Check if listing exists in valid cars_unified records
             if data.get('listing_url') not in valid_urls_set:
                 skipped += 1
                 logger.debug(f"⚠️ Skipped price history - listing_url not in cars_unified: {data.get('listing_url')}")
+                continue
+            if str(data.get("listing_id")) not in valid_ids_set:
+                skipped += 1
+                logger.debug(f"⚠️ Skipped price history - listing_id not in cars_unified: {data.get('listing_id')}")
                 continue
 
             valid_data.append(data)
@@ -453,11 +472,12 @@ class CarDataSyncService:
             # Bulk UPSERT using PostgreSQL ON CONFLICT (without created_at)
             upsert_query = """
                 INSERT INTO price_history_unified (
-                    source, listing_url, old_price, new_price, changed_at
+                    source, listing_id, listing_url, old_price, new_price, changed_at
                 ) VALUES %s
                 ON CONFLICT (listing_url, changed_at)
                 DO UPDATE SET
                     source = EXCLUDED.source,
+                    listing_id = EXCLUDED.listing_id,
                     old_price = EXCLUDED.old_price,
                     new_price = EXCLUDED.new_price
                 RETURNING (xmax = 0) AS inserted
@@ -466,7 +486,11 @@ class CarDataSyncService:
             values = []
             for data in valid_data:
                 values.append((
-                    source, data['listing_url'], data['old_price'], data['new_price'],
+                    source,
+                    str(data["listing_id"]) if data.get("listing_id") is not None else None,
+                    data['listing_url'],
+                    data['old_price'],
+                    data['new_price'],
                     data['changed_at']
                 ))
             
@@ -532,7 +556,7 @@ class CarDataSyncService:
             
             # STEP 4: Sync car data using efficient UPSERT (without cars_standard_id and category_id)
             logger.info(f"💾 Syncing {len(all_normalized_data)} car records to target database...")
-            car_inserted, car_updated, car_skipped, valid_listing_urls = self.sync_to_target_database(all_normalized_data)
+            car_inserted, car_updated, car_skipped, valid_listing_urls, valid_listing_ids = self.sync_to_target_database(all_normalized_data)
             logger.info(f"✅ Car data UPSERT completed: {car_inserted} inserted, {car_updated} updated, {car_skipped} skipped")
             logger.info(f"📋 Valid listing URLs collected: {len(valid_listing_urls)} records")
             
@@ -556,11 +580,21 @@ class CarDataSyncService:
                 
                 # Sync price history using direct UPSERT with valid URL filtering
                 if len(carlistmy_prices) > 0:
-                    price_carlistmy_inserted, price_carlistmy_updated, price_carlistmy_not_found = self.sync_price_history_direct(carlistmy_prices, 'carlistmy', valid_listing_urls)
+                    price_carlistmy_inserted, price_carlistmy_updated, price_carlistmy_not_found = self.sync_price_history_direct(
+                        carlistmy_prices,
+                        'carlistmy',
+                        valid_listing_urls,
+                        valid_listing_ids,
+                    )
                     logger.info(f"✅ CarlistMY price history: {price_carlistmy_inserted} inserted, {price_carlistmy_updated} updated, {price_carlistmy_not_found} skipped")
 
                 if len(mudahmy_prices) > 0:
-                    price_mudahmy_inserted, price_mudahmy_updated, price_mudahmy_not_found = self.sync_price_history_direct(mudahmy_prices, 'mudahmy', valid_listing_urls)
+                    price_mudahmy_inserted, price_mudahmy_updated, price_mudahmy_not_found = self.sync_price_history_direct(
+                        mudahmy_prices,
+                        'mudahmy',
+                        valid_listing_urls,
+                        valid_listing_ids,
+                    )
                     logger.info(f"✅ MudahMY price history: {price_mudahmy_inserted} inserted, {price_mudahmy_updated} updated, {price_mudahmy_not_found} skipped")
             else:
                 logger.info("⏭️ No car data changes, skipping price history sync")

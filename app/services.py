@@ -989,9 +989,20 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
             row = await conn.fetchrow(unified_query, *unified_params)
 
         if row:
+            ads_tag = row["ads_tag"] if "ads_tag" in row.keys() else None
+            created_at_value = row["created_at"] if "created_at" in row.keys() else None
+            listing_id_value = row["listing_id"] if "listing_id" in row.keys() else None
+            series_value = row["series"] if "series" in row.keys() else None
+            type_value = row["type"] if "type" in row.keys() else None
+            images_value = row["images"]
+            if images_value is None:
+                images_value = []
+            elif not isinstance(images_value, list):
+                images_value = [images_value]
             return {
                 'id': row['id'],
                 'source': row['source'],
+                'listing_id': listing_id_value,
                 'listing_url': row['listing_url'],
                 'brand': row['brand_norm'] or row['brand'],
                 'brand_raw': row['brand'],
@@ -999,6 +1010,8 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
                 'model_raw': row['model'],
                 'variant': row['variant_norm'] or row['variant'],
                 'variant_raw': row['variant'],
+                'series': series_value,
+                'type': type_value,
                 'condition': row['condition'],
                 'year': row['year'],
                 'mileage': row['mileage'],
@@ -1009,12 +1022,12 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
                 'price': row['price'],
                 'location': row['location'],
                 'information_ads': row['information_ads'],
-                'images': row['images'],
+                'images': images_value,
                 'status': row['status'],
-                'ads_tag': row['ads_tag'],
+                'ads_tag': ads_tag,
                 'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
                 'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
-                'created_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
+                'created_at': created_at_value.isoformat() if created_at_value else None,
                 'standard_info': {
                     'brand_norm': row['brand_norm'],
                     'model_norm': row['model_norm'],
@@ -1037,6 +1050,9 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
             created_at_iso = created_at.isoformat() if created_at else None
             last_updated = carsome_row['last_updated_at']
             last_updated_iso = last_updated.isoformat() if last_updated else created_at_iso
+            carsome_images = []
+            if carsome_row.get("image"):
+                carsome_images = [carsome_row["image"]]
 
             return {
                 'id': carsome_row['id'],
@@ -1058,7 +1074,7 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
                 'price': carsome_row['price'],
                 'location': None,
                 'information_ads': None,
-                'images': carsome_row['image'],
+                'images': carsome_images,
                 'status': carsome_row['status'],
                 'ads_tag': None,
                 'last_scraped_at': last_updated_iso,

@@ -1,4 +1,4 @@
-"""Telegram Daily Scrape Summary (Unified + Archive DB)
+"""Telegram Daily Scrape Summary (Unified DB)
 
 Reads the same unified table used by the dashboard (default: TB_UNIFIED=cars_unified)
 and sends a daily summary message to Telegram.
@@ -16,19 +16,17 @@ Required env (.env):
   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
   TB_UNIFIED (optional, default: cars_unified)
   TELEGRAM_BOT_TOKEN
-  TELEGRAM_CHAT_ID (optional if using --broadcast)
+  TELEGRAM_CHAT_ID (optional if using --broadcast; supports comma/space-separated list)
 
 Optional env:
   TELEGRAM_REPORT_SOURCES=mudahmy,carlistmy
-  TB_UNIFIED_ARCHIVE (optional, default: <TB_UNIFIED>_archive)
   TB_CARSOME (optional, default: carsome)
   TELEGRAM_SUBSCRIBERS_TABLE (optional, default: public.telegram_subscribers)
   TELEGRAM_STATE_TABLE (optional, default: public.telegram_bot_state)
 
 Notes:
-  - "TOTAL" counts include both unified + archive tables when the archive table exists.
+  - "TOTAL" counts are based on the unified table (and Carsome when present).
   - "UNIQUE" counts are based on DISTINCT listing_url.
-    UNIQUE(today) excludes listing_url that already exist in the archive table (when present).
   - Today's counts match the dashboard KPI definition (status in active/sold and cars_standard_id is not null).
   - For on-demand replies, run with --handle-updates --reply-report, then send /report (or /report YYYY-MM-DD) to the bot.
 """
@@ -52,7 +50,8 @@ def parse_date(value: str) -> date:
 
 def load_env() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    load_dotenv(dotenv_path=repo_root / ".env", override=True)
+    # Do not override OS env vars (allows one-off overrides like `DB_NAME=... python ...`)
+    load_dotenv(dotenv_path=repo_root / ".env")
 
 
 def validate_table_name(name: str) -> str:
@@ -72,15 +71,6 @@ def get_db_config() -> dict:
         "password": os.getenv("DB_PASSWORD"),
         "dbname": os.getenv("DB_NAME"),
     }
-
-
-def derive_archive_table_name(table: str) -> str:
-    """Derive archive table name from base table name (e.g., cars_unified -> cars_unified_archive)."""
-    table = validate_table_name(table)
-    if "." in table:
-        schema, base = table.split(".", 1)
-        return f"{schema}.{base}_archive"
-    return f"{table}_archive"
 
 
 def table_exists(conn, table: str) -> bool:
@@ -118,13 +108,27 @@ def column_exists(conn, table: str, column: str) -> bool:
         return cur.fetchone() is not None
 
 
-def _build_union_source_sql(tables: list[str]) -> str:
-    """Build a UNION ALL subquery selecting the minimal fields needed for metrics."""
+def _build_union_source_sql(
+    tables: list[str],
+    *,
+    include_status: bool,
+    include_cars_standard_id: bool,
+) -> str:
+    """Build a UNION ALL subquery selecting fields needed for metrics."""
     safe_tables = [validate_table_name(t) for t in tables]
-    parts = [
-        f"SELECT LOWER(source) AS source, listing_url, information_ads_date FROM {t}"
-        for t in safe_tables
+
+    select_parts = [
+        "LOWER(source) AS source",
+        "listing_url",
+        "information_ads_date",
     ]
+    if include_cars_standard_id:
+        select_parts.append("cars_standard_id")
+    if include_status:
+        select_parts.append("status")
+
+    select_sql = ", ".join(select_parts)
+    parts = [f"SELECT {select_sql} FROM {t}" for t in safe_tables]
     return " UNION ALL ".join(parts)
 
 
@@ -487,25 +491,28 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
     # Match dashboard "Today" KPI: only active/sold listings
     dashboard_statuses = ["active", "sold"]
 
-    archive_table = validate_table_name(os.getenv("TB_UNIFIED_ARCHIVE", derive_archive_table_name(table)))
-    include_archive = table_exists(conn, archive_table)
-
     carsome_table = validate_table_name(os.getenv("TB_CARSOME", "carsome"))
     include_carsome = table_exists(conn, carsome_table)
 
-    # All-time dataset: cars_unified + cars_unified_archive (if exists) + carsome (if exists)
-    all_union_tables = [table] + ([archive_table] if include_archive else [])
-    all_union_sql = _build_union_source_sql(all_union_tables)
+    # All-time dataset: cars_unified + carsome (if exists)
+    all_union_tables = [table]
+    # "All" totals should match dashboard definition too:
+    # status in (active/sold) and cars_standard_id is not null.
+    all_union_sql = _build_union_source_sql(
+        all_union_tables,
+        include_status=True,
+        include_cars_standard_id=True,
+    )
     if include_carsome:
         carsome_all_sql = build_carsome_select(
             conn,
             carsome_table,
-            include_status=False,
-            include_cars_standard_id=False,
+            include_status=True,
+            include_cars_standard_id=True,
         )
         all_union_sql = f"{all_union_sql} UNION ALL {carsome_all_sql}"
 
-    # Today's dataset (to match dashboard): cars_unified + carsome (no archive) + status filter + require cars_standard_id
+    # Today's dataset (to match dashboard): cars_unified + carsome + status filter + require cars_standard_id
     today_union_sql = (
         f"SELECT LOWER(source) AS source, listing_url, information_ads_date, cars_standard_id, status "
         f"FROM {table}"
@@ -519,7 +526,7 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
         )
         today_union_sql = f"{today_union_sql} UNION ALL {carsome_today_sql}"
 
-    # Per-source counts (unified + archive when present)
+    # Per-source counts
     per_source_sql = f"""
         WITH
           today_data AS ({today_union_sql}),
@@ -543,7 +550,10 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
         FULL JOIN (
           SELECT
             source,
-            COUNT(*) AS all_time_count
+            COUNT(*) FILTER (
+              WHERE LOWER(status) = ANY(%s)
+                AND cars_standard_id IS NOT NULL
+            ) AS all_time_count
           FROM all_data
           WHERE source = ANY(%s)
           GROUP BY 1
@@ -554,21 +564,31 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
 
     # Overall totals + uniques across selected sources
     totals_sql = f"""
+        WITH all_data AS ({all_union_sql})
         SELECT
-            COUNT(*) FILTER (WHERE information_ads_date = %s) AS total_today,
-            COUNT(*) AS total_all,
-            COUNT(DISTINCT listing_url) AS unique_all
-        FROM ({all_union_sql}) t
+            COUNT(*) FILTER (
+              WHERE information_ads_date = %s
+                AND LOWER(status) = ANY(%s)
+                AND cars_standard_id IS NOT NULL
+            ) AS total_today,
+            COUNT(*) FILTER (
+              WHERE LOWER(status) = ANY(%s)
+                AND cars_standard_id IS NOT NULL
+            ) AS total_all,
+            COUNT(DISTINCT listing_url) FILTER (
+              WHERE LOWER(status) = ANY(%s)
+                AND cars_standard_id IS NOT NULL
+            ) AS unique_all
+        FROM all_data
         WHERE source = ANY(%s)
     """
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(per_source_sql, (report_date, dashboard_statuses, sources_norm, sources_norm))
+        cur.execute(per_source_sql, (report_date, dashboard_statuses, sources_norm, dashboard_statuses, sources_norm))
         rows = cur.fetchall() or []
 
-        cur.execute(totals_sql, (report_date, sources_norm))
+        cur.execute(totals_sql, (report_date, dashboard_statuses, dashboard_statuses, dashboard_statuses, sources_norm))
         totals = cur.fetchone() or {"total_today": 0, "total_all": 0, "unique_all": 0}
-        totals["_archive_included"] = include_archive
 
         # Total "today" should match dashboard: use today_data + status filter
         totals_today_sql = f"""
@@ -584,34 +604,16 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
         totals_today_row = cur.fetchone() or {"total_today": 0}
         totals["total_today"] = totals_today_row.get("total_today", 0)
 
-        if include_archive:
-            unique_today_sql = f"""
-                SELECT
-                    COUNT(DISTINCT td.listing_url) AS unique_today
-                FROM ({today_union_sql}) td
-                WHERE td.source = ANY(%s)
-                  AND td.information_ads_date = %s
-                  AND LOWER(td.status) = ANY(%s)
-                  AND td.cars_standard_id IS NOT NULL
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM {archive_table} ca
-                    WHERE LOWER(ca.source) = td.source
-                      AND ca.listing_url = td.listing_url
-                  )
-            """
-            cur.execute(unique_today_sql, (sources_norm, report_date, dashboard_statuses))
-        else:
-            unique_today_sql = f"""
-                SELECT
-                    COUNT(DISTINCT td.listing_url) AS unique_today
-                FROM ({today_union_sql}) td
-                WHERE td.source = ANY(%s)
-                  AND td.information_ads_date = %s
-                  AND LOWER(td.status) = ANY(%s)
-                  AND td.cars_standard_id IS NOT NULL
-            """
-            cur.execute(unique_today_sql, (sources_norm, report_date, dashboard_statuses))
+        unique_today_sql = f"""
+            SELECT
+                COUNT(DISTINCT td.listing_url) AS unique_today
+            FROM ({today_union_sql}) td
+            WHERE td.source = ANY(%s)
+              AND td.information_ads_date = %s
+              AND LOWER(td.status) = ANY(%s)
+              AND td.cars_standard_id IS NOT NULL
+        """
+        cur.execute(unique_today_sql, (sources_norm, report_date, dashboard_statuses))
 
         unique_today_row = cur.fetchone() or {"unique_today": 0}
         totals["unique_today"] = unique_today_row.get("unique_today", 0)
@@ -711,16 +713,35 @@ def send_telegram_message(token: str, chat_id: int, text: str) -> None:
         raise RuntimeError(f"Telegram sendMessage failed: chat_id={chat_id} HTTP {resp.status_code}: {resp.text}")
 
 
+def parse_telegram_chat_ids(value: str) -> list[int]:
+    parts = [p for p in re.split(r"[,\s]+", (value or "").strip()) if p]
+    if not parts:
+        return []
+    chat_ids: list[int] = []
+    for part in parts:
+        if not re.fullmatch(r"-?\d+", part):
+            raise ValueError(
+                "Invalid TELEGRAM_CHAT_ID format. Use a single integer or a comma/space-separated list "
+                "(e.g. 123456789 or 123456789,987654321)."
+            )
+        chat_ids.append(int(part))
+    return chat_ids
+
+
 def send_telegram(text: str, *, chat_ids: list[int] | None = None) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 
     if chat_ids is None:
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
+        chat_id_raw = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id_raw:
             raise RuntimeError("Missing TELEGRAM_CHAT_ID (or use --broadcast)")
-        send_telegram_message(token, int(chat_id), text)
+        chat_ids = parse_telegram_chat_ids(chat_id_raw)
+        if not chat_ids:
+            raise RuntimeError("Missing TELEGRAM_CHAT_ID (or use --broadcast)")
+        for chat_id in chat_ids:
+            send_telegram_message(token, int(chat_id), text)
         return
 
     if not chat_ids:

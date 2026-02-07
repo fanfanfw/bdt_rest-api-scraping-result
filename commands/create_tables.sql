@@ -74,14 +74,11 @@ CREATE TABLE IF NOT EXISTS cars_unified (
     
     -- Status tracking
     status VARCHAR(20) NOT NULL DEFAULT 'active',
-    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     
     -- Timestamps
     created_at TIMESTAMPTZ NULL,
     last_scraped_at TIMESTAMPTZ NULL,
     version INTEGER NOT NULL DEFAULT 1,
-    sold_at TIMESTAMP NULL,
-    last_status_check TIMESTAMP NULL,
     information_ads_date DATE NULL,
     
     -- Constraints
@@ -151,7 +148,6 @@ FOREIGN KEY (cars_standard_id) REFERENCES cars_standard(id) ON DELETE CASCADE;
 
 -- Additional performance indexes based on common queries
 CREATE INDEX IF NOT EXISTS idx_cars_unified_status ON cars_unified (status) WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS idx_cars_unified_deleted ON cars_unified (is_deleted) WHERE is_deleted = FALSE;
 CREATE INDEX IF NOT EXISTS idx_cars_unified_source ON cars_unified (source);
 
 -- Composite indexes for common filter combinations
@@ -182,7 +178,6 @@ SELECT brand, model, price, year, location
 FROM cars_unified 
 WHERE brand = 'Honda' 
   AND price BETWEEN 50000 AND 100000 
-  AND is_deleted = FALSE 
   AND status = 'active'
 ORDER BY price;
 

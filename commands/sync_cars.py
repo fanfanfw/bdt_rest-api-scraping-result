@@ -30,9 +30,12 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 import json
 from dotenv import load_dotenv
+from pathlib import Path
 
-# Load environment variables
-load_dotenv(override=True)
+# Load environment variables from repo root without overriding OS env vars.
+# Allows one-off overrides like `DB_NAME=... python commands/sync_cars.py ...`.
+_repo_root = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=_repo_root / ".env")
 
 # Configure logging
 logging.basicConfig(
@@ -289,12 +292,9 @@ class CarDataSyncService:
             'information_ads': data.get('information_ads'),
             'images': images,
             'status': data.get('status', 'active'),
-            'is_deleted': data.get('is_deleted', False),
             'created_at': data.get('created_at'),
             'last_scraped_at': data.get('last_scraped_at'),
             'version': data.get('version', 1),
-            'sold_at': data.get('sold_at'),
-            'last_status_check': data.get('last_status_check'),
             'information_ads_date': data.get('information_ads_date'),
         }
 
@@ -366,8 +366,8 @@ class CarDataSyncService:
                 INSERT INTO cars_unified (
                     source, listing_url, listing_id, condition, brand, model, variant, series, type,
                     year, mileage, transmission, seat_capacity, engine_cc, fuel_type, price,
-                    location, information_ads, images, status, is_deleted,
-                    created_at, last_scraped_at, version, sold_at, last_status_check, information_ads_date
+                    location, information_ads, images, status,
+                    created_at, last_scraped_at, version, information_ads_date
                 ) VALUES %s
                 ON CONFLICT (source, listing_url)
                 DO UPDATE SET
@@ -390,12 +390,9 @@ class CarDataSyncService:
                     information_ads = EXCLUDED.information_ads,
                     images = EXCLUDED.images,
                     status = EXCLUDED.status,
-                    is_deleted = EXCLUDED.is_deleted,
                     created_at = COALESCE(cars_unified.created_at, EXCLUDED.created_at),
                     last_scraped_at = EXCLUDED.last_scraped_at,
                     version = EXCLUDED.version,
-                    sold_at = EXCLUDED.sold_at,
-                    last_status_check = EXCLUDED.last_status_check,
                     information_ads_date = EXCLUDED.information_ads_date
                 RETURNING (xmax = 0) AS inserted
             """
@@ -407,9 +404,9 @@ class CarDataSyncService:
                     data['brand'], data['model'], data['variant'], data.get('series'), data.get('type'),
                     data['year'], data['mileage'], data['transmission'], data['seat_capacity'],
                     data['engine_cc'], data['fuel_type'], data['price'], data['location'],
-                    data['information_ads'], data['images'], data['status'], data['is_deleted'],
+                    data['information_ads'], data['images'], data['status'],
                     data.get('created_at'), data['last_scraped_at'], data['version'],
-                    data['sold_at'], data['last_status_check'], data['information_ads_date']
+                    data['information_ads_date']
                 ))
             
             # Execute bulk upsert using psycopg2.extras.execute_values
@@ -765,7 +762,7 @@ def display_summary(summary: Dict[str, Any]):
     print(f"   Inserted: {cars['inserted']}")
     print(f"   Updated: {cars['updated']}")
     if cars.get('skipped', 0) > 0:
-        print(f"   Skipped: {cars['skipped']} (missing brand/model/condition/price/mileage/year)")
+        print(f"   Skipped: {cars['skipped']} (missing brand/model/variant/price/year/mileage)")
     
     # Fill results
     fill = summary.get('fill_results', {})

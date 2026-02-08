@@ -1,13 +1,27 @@
+import time
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.endpoints import router, admin_router, django_router
 from app.dependencies import verify_api_key
+
+_START_TIME = time.monotonic()
 
 app = FastAPI(
     title="Car Analytics API",
     version="1.0.0",
     root_path="/api"  
 )
+
+@app.get("/health", tags=["Health"])
+@app.get("/healthz", tags=["Health"])
+async def health_check():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "uptime_s": int(time.monotonic() - _START_TIME),
+    }
 
 app.add_middleware(
     CORSMiddleware,

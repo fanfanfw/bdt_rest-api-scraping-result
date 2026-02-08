@@ -1,7 +1,7 @@
 import time
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.endpoints import router, admin_router, django_router
 from app.dependencies import verify_api_key
@@ -14,16 +14,19 @@ app = FastAPI(
     root_path="/api"  
 )
 
-@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
-@app.api_route("/healthz", methods=["GET", "HEAD"], tags=["Health"])
-@app.api_route("/api/health", methods=["GET", "HEAD"], tags=["Health"])
-@app.api_route("/api/healthz", methods=["GET", "HEAD"], tags=["Health"])
-async def health_check():
+@app.get("/health", tags=["Health"])
+@app.get("/healthz", tags=["Health"])
+async def health_check_get():
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "uptime_s": int(time.monotonic() - _START_TIME),
     }
+
+@app.head("/health", include_in_schema=False)
+@app.head("/healthz", include_in_schema=False)
+async def health_check_head():
+    return Response(status_code=200)
 
 app.add_middleware(
     CORSMiddleware,

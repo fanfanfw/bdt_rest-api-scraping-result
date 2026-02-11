@@ -7,6 +7,7 @@ from app.services import (
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
 )
+from app.database import get_local_db_connection
 from typing import Optional
 from app.models import (
     APIKeyCreateRequest,
@@ -77,8 +78,9 @@ async def price_vs_mileage(
     limit: int = Query(100, ge=1, le=1000, description="Jumlah data per halaman"),
     offset: int = Query(0, ge=0, description="Offset data (untuk pagination)"),
     sort_by: Optional[str] = Query("scraped_at", description="Kolom untuk pengurutan. Options: scraped_at, ads_date"),
-    sort_direction: Optional[str] = Query("desc", description="Arah pengurutan. Options: asc, desc")
+    sort_direction: Optional[str] = Query("desc", description="Arah pengurutan. Options: asc, desc"),
 ):
+    conn = await get_local_db_connection()
     try:
         data = await get_price_vs_mileage_filtered(
             source=source,
@@ -89,7 +91,8 @@ async def price_vs_mileage(
             limit=limit,
             offset=offset,
             sort_by=sort_by,
-            sort_direction=sort_direction
+            sort_direction=sort_direction,
+            conn=conn,
         )
 
         from app.services import get_price_vs_mileage_total_count
@@ -98,7 +101,8 @@ async def price_vs_mileage(
             brand=brand,
             model=model,
             variant=variant,
-            year=year
+            year=year,
+            conn=conn,
         )
 
         return {
@@ -111,6 +115,8 @@ async def price_vs_mileage(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
 
 
 # Django Endpoints (Unlimited Access)

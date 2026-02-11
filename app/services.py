@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import pandas as pd
 import matplotlib.pyplot as plt
 import io
@@ -26,6 +27,45 @@ TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
+_PRICE_VS_MILEAGE_TOTAL_TTL_S = _env_int("PRICE_VS_MILEAGE_TOTAL_TTL_S", 300)
+_price_vs_mileage_total_cache: Dict[Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[int]], Tuple[int, float]] = {}
+
+
+def _normalize_source(source: Optional[str]) -> Optional[str]:
+    if not source:
+        return None
+    normalized = source.strip().lower()
+    return normalized or None
+
+
+def _cache_get_total_count(key):
+    cached = _price_vs_mileage_total_cache.get(key)
+    if not cached:
+        return None
+    value, expires_at = cached
+    if time.monotonic() >= expires_at:
+        _price_vs_mileage_total_cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set_total_count(key, value: int):
+    if _PRICE_VS_MILEAGE_TOTAL_TTL_S <= 0:
+        return
+    _price_vs_mileage_total_cache[key] = (value, time.monotonic() + _PRICE_VS_MILEAGE_TOTAL_TTL_S)
+
 
 def _extract_schema_and_table(table_identifier: str) -> Tuple[str, str]:
     """Split table identifier into schema and table parts."""
@@ -305,45 +345,58 @@ def _build_price_vs_mileage_cte() -> str:
     and already-normalized brand/model/variant taken from cars_standard.
     Only listings that have a valid cars_standard_id will appear in the combined set.
     """
-    return f"""
-        WITH combined AS (
-            SELECT 
-                c.id,
-                c.cars_standard_id,
-                cs.brand_norm AS brand,
-                cs.model_norm AS model,
-                cs.variant_norm AS variant,
-                c.price,
-                c.mileage,
-                c.year,
-                c.source,
-                c.status,
-                c.last_scraped_at,
-                c.information_ads_date
-            FROM {TB_UNIFIED} c
-            INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
-            WHERE c.status IN ('active', 'sold')
+    return _build_price_vs_mileage_cte_for_source(None)
 
-            UNION ALL
 
-            SELECT
-                co.id,
-                co.cars_standard_id,
-                cs.brand_norm AS brand,
-                cs.model_norm AS model,
-                cs.variant_norm AS variant,
-                co.price,
-                co.mileage,
-                co.year,
-                COALESCE(co.source, 'carsome') AS source,
-                co.status,
-                co.last_updated_at AS last_scraped_at,
-                co.created_at::date AS information_ads_date
-            FROM {TB_CARSOME} co
-            INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
-            WHERE co.status IN ('active', 'sold')
-        )
+def _build_price_vs_mileage_cte_for_source(source: Optional[str]) -> str:
+    normalized_source = _normalize_source(source)
+
+    unified_select = f"""
+        SELECT
+            c.id,
+            c.cars_standard_id,
+            cs.brand_norm AS brand,
+            cs.model_norm AS model,
+            cs.variant_norm AS variant,
+            c.price,
+            c.mileage,
+            c.year,
+            c.source,
+            c.status,
+            c.last_scraped_at,
+            c.information_ads_date
+        FROM {TB_UNIFIED} c
+        INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+        WHERE c.status IN ('active', 'sold')
     """
+
+    carsome_select = f"""
+        SELECT
+            co.id,
+            co.cars_standard_id,
+            cs.brand_norm AS brand,
+            cs.model_norm AS model,
+            cs.variant_norm AS variant,
+            co.price,
+            co.mileage,
+            co.year,
+            COALESCE(co.source, 'carsome') AS source,
+            co.status,
+            co.last_updated_at AS last_scraped_at,
+            co.created_at::date AS information_ads_date
+        FROM {TB_CARSOME} co
+        INNER JOIN {TB_CARS_STANDARD} cs ON co.cars_standard_id = cs.id
+        WHERE co.status IN ('active', 'sold')
+    """
+
+    if normalized_source == "carsome":
+        combined = carsome_select
+    elif normalized_source in {"mudahmy", "carlistmy"}:
+        combined = unified_select
+    else:
+        combined = f"{unified_select}\n\n        UNION ALL\n\n        {carsome_select}"
+
+    return f"WITH combined AS (\n{combined}\n)"
 
 # insert_or_update_data_into_local_db function removed - sync now handled by sync_cars.py
 
@@ -397,9 +450,13 @@ async def get_price_vs_mileage_filtered(
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "scraped_at",
-    sort_direction: str = "desc"
+    sort_direction: str = "desc",
+    conn=None,
 ) -> List[dict]:
-    conn = await get_local_db_connection()
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
     try:
         conditions = []
         values = []
@@ -440,7 +497,7 @@ async def get_price_vs_mileage_filtered(
         sort_column = "information_ads_date" if sort_by == "ads_date" else "last_scraped_at"
         sort_order = "ASC" if sort_direction.lower() == "asc" else "DESC"
         
-        combined_cte = _build_price_vs_mileage_cte()
+        combined_cte = _build_price_vs_mileage_cte_for_source(source)
         final_query = f"""
             {combined_cte}
             SELECT 
@@ -460,7 +517,14 @@ async def get_price_vs_mileage_filtered(
         """
 
         values.extend([limit, offset])
+        started = time.monotonic()
         result = await conn.fetch(final_query, *values)
+        elapsed_s = time.monotonic() - started
+        if elapsed_s >= 2.0:
+            logger.warning(
+                "Slow price_vs_mileage query: %.3fs (source=%r brand=%r model=%r variant=%r year=%r sort_by=%r offset=%d limit=%d)",
+                elapsed_s, source, brand, model, variant, year, sort_by, offset, limit
+            )
 
         data = []
         for row in result:
@@ -482,7 +546,8 @@ async def get_price_vs_mileage_filtered(
         logger.error(f"Error in get_price_vs_mileage_filtered: {str(e)}")
         raise
     finally:
-        await conn.close()
+        if owns_conn and conn is not None:
+            await conn.close()
 
 async def generate_scatter_plot(data: list) -> io.BytesIO:
     prices = [item['price'] for item in data]
@@ -525,8 +590,23 @@ async def get_price_vs_mileage_total_count(
     model: Optional[str] = None,
     variant: Optional[str] = None,
     year: Optional[int] = None,
+    conn=None,
 ) -> int:
-    conn = await get_local_db_connection()
+    cache_key = (
+        _normalize_source(source),
+        brand.strip().upper() if brand else None,
+        model.strip().upper() if model else None,
+        variant.strip().upper() if variant else None,
+        year,
+    )
+    cached = _cache_get_total_count(cache_key)
+    if cached is not None:
+        return cached
+
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
     try:
         conditions = []
         values = []
@@ -560,7 +640,7 @@ async def get_price_vs_mileage_total_count(
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        combined_cte = _build_price_vs_mileage_cte()
+        combined_cte = _build_price_vs_mileage_cte_for_source(source)
         count_query = f"""
             {combined_cte}
             SELECT COUNT(*) AS total
@@ -568,11 +648,20 @@ async def get_price_vs_mileage_total_count(
             WHERE {where_clause}
         """
         
+        started = time.monotonic()
         result = await conn.fetchval(count_query, *values)
+        elapsed_s = time.monotonic() - started
+        if elapsed_s >= 2.0:
+            logger.warning(
+                "Slow price_vs_mileage COUNT: %.3fs (source=%r brand=%r model=%r variant=%r year=%r)",
+                elapsed_s, source, brand, model, variant, year
+            )
+        _cache_set_total_count(cache_key, int(result))
         return result
 
     finally:
-        await conn.close()
+        if owns_conn and conn is not None:
+            await conn.close()
 
 
 async def clear_rate_limit(api_key: str) -> dict:

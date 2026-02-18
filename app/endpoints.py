@@ -6,23 +6,28 @@ from app.services import (
     create_api_key, clear_rate_limit, get_brands_list, get_models_list,
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
+    get_telegram_daily_metrics,
 )
 from app.database import get_local_db_connection
 from typing import Optional
 from app.models import (
     APIKeyCreateRequest,
     APIKeyCreateResponse,
+    TelegramDailyMetricsResponse,
 )
 import os
+from datetime import datetime
 
 router = APIRouter()
 admin_router = APIRouter()
 django_router = APIRouter()  # Unlimited access for Django
+telegram_router = APIRouter()  # Dedicated auth for Telegram report consumer
 # app.include_router(router)
 # app.include_router(router, prefix="/api")
 
 ADMIN_KEY = os.getenv("ADMIN_SECRET_KEY", "changeme")
 DJANGO_KEY = os.getenv("DJANGO_SECRET_KEY", "django-unlimited-access")
+TELEGRAM_SECRET_KEY = os.getenv("TELEGRAM_BOT_SECRET_KEY")
 
 @admin_router.post("/api_keys", response_model=APIKeyCreateResponse, tags=["Admin"])
 async def create_api_key_endpoint(
@@ -124,6 +129,38 @@ def verify_django_key(x_django_key: str = Header(...)):
     """Verify Django secret key"""
     if x_django_key != DJANGO_KEY:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Django key")
+
+def verify_telegram_secret_key(x_telegram_bot_secret_key: str = Header(...)):
+    """Verify Telegram report secret key (separate from API clients auth)."""
+    if not TELEGRAM_SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="TELEGRAM_BOT_SECRET_KEY is not configured on server",
+        )
+    if x_telegram_bot_secret_key != TELEGRAM_SECRET_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Telegram secret key")
+
+def _parse_yyyy_mm_dd(value: str):
+    return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+@telegram_router.get(
+    "/telegram/reports/cars/daily-metrics",
+    tags=["Telegram"],
+    response_model=TelegramDailyMetricsResponse,
+)
+async def telegram_cars_daily_metrics(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (default: server local today)"),
+    sources: Optional[str] = Query(None, description="Comma-separated sources, e.g. mudahmy,carlistmy"),
+    x_telegram_bot_secret_key: str = Header(...),
+):
+    verify_telegram_secret_key(x_telegram_bot_secret_key)
+
+    report_date = _parse_yyyy_mm_dd(date) if date else datetime.now().date()
+    source_list: Optional[List[str]] = None
+    if sources and sources.strip():
+        source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    return await get_telegram_daily_metrics(report_date=report_date, sources=source_list)
 
 
 @django_router.get("/django/brands", tags=["Django"])

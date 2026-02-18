@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
-from app.endpoints import router, admin_router, django_router
+from app.endpoints import router, admin_router, django_router, telegram_router
 from app.dependencies import verify_api_key
 from app.database import init_db_pools, close_db_pools
 
@@ -50,3 +50,4 @@ app.add_middleware(
 app.include_router(router, dependencies=[Depends(verify_api_key)])
 app.include_router(admin_router)
 app.include_router(django_router)  # Unlimited access for Django
+app.include_router(telegram_router)

@@ -1260,6 +1260,203 @@ async def get_today_data_count() -> int:
         await conn.close()
 
 
+def _validate_table_name(name: str) -> str:
+    """Allow only `schema.table` or `table` with safe characters (for identifier injection)."""
+    import re
+
+    if not name:
+        raise ValueError("Empty table name")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", name):
+        raise ValueError(f"Invalid table name: {name!r}")
+    return name
+
+
+async def _table_exists(conn, table: str) -> bool:
+    table = _validate_table_name(table)
+    return bool(await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", table))
+
+
+async def _column_exists(conn, table: str, column: str) -> bool:
+    table = _validate_table_name(table)
+    column = (column or "").strip()
+    if not column:
+        return False
+
+    if "." in table:
+        schema, plain_table = table.split(".", 1)
+    else:
+        schema, plain_table = "public", table
+
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = $1
+              AND table_name = $2
+              AND column_name = $3
+            LIMIT 1
+            """,
+            schema,
+            plain_table,
+            column,
+        )
+    )
+
+
+async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Return daily metrics used by the Telegram report (per-source + totals).
+
+    Definition matches the old CLI script:
+    - dataset: {TB_UNIFIED} plus {TB_CARSOME} when present
+    - filter: LOWER(status) in ('active','sold') AND cars_standard_id IS NOT NULL
+    - today: information_ads_date == report_date (carsome uses created_at::date)
+    - uniques: DISTINCT listing_url (carsome synthesizes listing_url)
+    """
+    conn = await get_local_db_connection()
+    try:
+        sources_env = os.getenv("TELEGRAM_REPORT_SOURCES", "mudahmy,carlistmy")
+        sources_norm = [s.strip().lower() for s in (sources or []) if s and s.strip()]
+        if not sources_norm:
+            sources_norm = [s.strip().lower() for s in sources_env.split(",") if s.strip()]
+        if not sources_norm:
+            raise HTTPException(status_code=400, detail="No sources provided")
+
+        dashboard_statuses = ["active", "sold"]
+
+        unified_table = _validate_table_name(TB_UNIFIED)
+        carsome_table = _validate_table_name(TB_CARSOME)
+        include_carsome = await _table_exists(conn, carsome_table)
+
+        # Carsome may not have listing_url; synthesize a stable identifier
+        carsome_listing_expr = "CONCAT('carsome-', id::text)"
+        if include_carsome and await _column_exists(conn, carsome_table, "reg_no"):
+            carsome_listing_expr = "CONCAT('carsome-', COALESCE(NULLIF(TRIM(reg_no), ''), id::text))"
+
+        unified_select = f"""
+            SELECT
+                LOWER(source) AS source,
+                listing_url,
+                information_ads_date::date AS information_ads_date,
+                cars_standard_id,
+                status
+            FROM {unified_table}
+        """
+        carsome_select = f"""
+            SELECT
+                LOWER(COALESCE(source, 'carsome')) AS source,
+                {carsome_listing_expr} AS listing_url,
+                COALESCE(created_at::date, CURRENT_DATE) AS information_ads_date,
+                cars_standard_id,
+                status
+            FROM {carsome_table}
+        """
+
+        today_union_sql = unified_select
+        all_union_sql = unified_select
+        if include_carsome:
+            today_union_sql = f"{today_union_sql}\nUNION ALL\n{carsome_select}"
+            all_union_sql = f"{all_union_sql}\nUNION ALL\n{carsome_select}"
+
+        per_source_sql = f"""
+            WITH
+              today_data AS ({today_union_sql}),
+              all_data AS ({all_union_sql})
+            SELECT
+              COALESCE(t.source, a.source) AS source,
+              COALESCE(t.today_count, 0) AS today_count,
+              COALESCE(a.all_time_count, 0) AS all_time_count
+            FROM (
+              SELECT
+                source,
+                COUNT(*) FILTER (
+                  WHERE information_ads_date = $1
+                    AND LOWER(status) = ANY($2::text[])
+                    AND cars_standard_id IS NOT NULL
+                ) AS today_count
+              FROM today_data
+              WHERE source = ANY($3::text[])
+              GROUP BY 1
+            ) t
+            FULL JOIN (
+              SELECT
+                source,
+                COUNT(*) FILTER (
+                  WHERE LOWER(status) = ANY($2::text[])
+                    AND cars_standard_id IS NOT NULL
+                ) AS all_time_count
+              FROM all_data
+              WHERE source = ANY($3::text[])
+              GROUP BY 1
+            ) a
+            USING (source)
+            ORDER BY 1
+        """
+
+        totals_sql = f"""
+            WITH
+              today_data AS ({today_union_sql}),
+              all_data AS ({all_union_sql})
+            SELECT
+              (SELECT COUNT(*)
+               FROM today_data td
+               WHERE td.source = ANY($3::text[])
+                 AND td.information_ads_date = $1
+                 AND LOWER(td.status) = ANY($2::text[])
+                 AND td.cars_standard_id IS NOT NULL) AS total_today,
+              (SELECT COUNT(DISTINCT td.listing_url)
+               FROM today_data td
+               WHERE td.source = ANY($3::text[])
+                 AND td.information_ads_date = $1
+                 AND LOWER(td.status) = ANY($2::text[])
+                 AND td.cars_standard_id IS NOT NULL) AS unique_today,
+              (SELECT COUNT(*)
+               FROM all_data ad
+               WHERE ad.source = ANY($3::text[])
+                 AND LOWER(ad.status) = ANY($2::text[])
+                 AND ad.cars_standard_id IS NOT NULL) AS total_all,
+              (SELECT COUNT(DISTINCT ad.listing_url)
+               FROM all_data ad
+               WHERE ad.source = ANY($3::text[])
+                 AND LOWER(ad.status) = ANY($2::text[])
+                 AND ad.cars_standard_id IS NOT NULL) AS unique_all
+        """
+
+        rows = await conn.fetch(per_source_sql, report_date, dashboard_statuses, sources_norm)
+        totals_row = await conn.fetchrow(totals_sql, report_date, dashboard_statuses, sources_norm)
+
+        found = {str(r["source"]): dict(r) for r in (rows or []) if r and r.get("source") is not None}
+        ordered_rows: List[Dict[str, Any]] = []
+        for src in sources_norm:
+            if src in found:
+                ordered_rows.append(
+                    {
+                        "source": src,
+                        "today_count": int(found[src].get("today_count") or 0),
+                        "all_time_count": int(found[src].get("all_time_count") or 0),
+                    }
+                )
+            else:
+                ordered_rows.append({"source": src, "today_count": 0, "all_time_count": 0})
+
+        totals = {
+            "total_today": int((totals_row or {}).get("total_today") or 0),
+            "total_all": int((totals_row or {}).get("total_all") or 0),
+            "unique_today": int((totals_row or {}).get("unique_today") or 0),
+            "unique_all": int((totals_row or {}).get("unique_all") or 0),
+        }
+
+        return {
+            "report_date": report_date,
+            "sources": sources_norm,
+            "rows": ordered_rows,
+            "totals": totals,
+        }
+    finally:
+        await conn.close()
+
+
 async def get_price_estimation(
     brand: str, 
     model: str, 

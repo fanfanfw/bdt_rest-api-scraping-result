@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel, Field
 from typing import Any, List
 
@@ -49,3 +49,23 @@ class CarsStandardSyncResult(BaseModel):
     synced_ids: List[int]
     missing_in_source: List[int]
     total_synced: int
+
+
+class TelegramSourceMetric(BaseModel):
+    source: str
+    today_count: int
+    all_time_count: int
+
+
+class TelegramTotals(BaseModel):
+    total_today: int
+    total_all: int
+    unique_today: int
+    unique_all: int
+
+
+class TelegramDailyMetricsResponse(BaseModel):
+    report_date: date
+    sources: List[str]
+    rows: List[TelegramSourceMetric]
+    totals: TelegramTotals

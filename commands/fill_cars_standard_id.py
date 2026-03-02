@@ -38,7 +38,7 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
     """
     cars_standard_id = None
 
-    if not brand or not model_group or not model or not variant:
+    if not brand or not model or not variant:
         return None
 
     try:
@@ -52,16 +52,22 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
 
         brand_matches = cur.fetchall()
 
-        for candidate in brand_matches:
-            # Step 2: Cek model_group - prioritas model_group_norm dulu, lalu model_group_raw
-            model_group_match = False
-            if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group.strip().upper():
-                model_group_match = True
-            elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group.strip().upper():
-                model_group_match = True
+        # model_group opsional untuk cars_unified terbaru.
+        # Jika None/"NO MODEL GROUP", jangan blokir matching.
+        model_group_norm = model_group.strip().upper() if model_group else None
+        ignore_model_group = model_group_norm in {None, "NO MODEL GROUP"}
 
-            if not model_group_match:
-                continue
+        for candidate in brand_matches:
+            # Step 2: Cek model_group hanya jika ada nilai valid
+            if not ignore_model_group:
+                model_group_match = False
+                if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group_norm:
+                    model_group_match = True
+                elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group_norm:
+                    model_group_match = True
+
+                if not model_group_match:
+                    continue
 
             # Step 3: Cek model - prioritas model_norm dulu, lalu model_raw
             model_match = False
@@ -175,7 +181,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
                 record_id = record['id']
                 listing_url = record['listing_url']
                 brand = record['brand']
-                model_group = "NO MODEL GROUP"
+                model_group = None
                 model = record['model']
                 variant = record['variant']
 

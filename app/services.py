@@ -1311,7 +1311,8 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
     Definition matches the old CLI script:
     - dataset: {TB_UNIFIED} plus {TB_CARSOME} when present
     - filter: LOWER(status) in ('active','sold') AND cars_standard_id IS NOT NULL
-    - today: information_ads_date == report_date (carsome uses created_at::date)
+    - today_count/total_today: last_scraped_at occurs on report_date
+    - unique_today: created_at AND last_scraped_at occur on report_date (new rows only)
     - uniques: DISTINCT listing_url (carsome synthesizes listing_url)
     """
     conn = await get_local_db_connection()
@@ -1329,6 +1330,34 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
         carsome_table = _validate_table_name(TB_CARSOME)
         include_carsome = await _table_exists(conn, carsome_table)
 
+        unified_created_expr = "created_at"
+        if not await _column_exists(conn, unified_table, "created_at"):
+            logger.warning("Telegram daily-metrics: %s has no created_at; falling back to last_scraped_at", unified_table)
+            unified_created_expr = "last_scraped_at"
+
+        unified_last_scraped_expr = "last_scraped_at"
+        if not await _column_exists(conn, unified_table, "last_scraped_at"):
+            logger.warning(
+                "Telegram daily-metrics: %s has no last_scraped_at; falling back to %s",
+                unified_table,
+                unified_created_expr,
+            )
+            unified_last_scraped_expr = unified_created_expr
+
+        carsome_created_expr = "created_at"
+        carsome_last_scraped_expr = "last_updated_at"
+        if include_carsome:
+            if not await _column_exists(conn, carsome_table, "created_at"):
+                logger.warning("Telegram daily-metrics: %s has no created_at; falling back to last_updated_at", carsome_table)
+                carsome_created_expr = "last_updated_at"
+            if not await _column_exists(conn, carsome_table, "last_updated_at"):
+                logger.warning(
+                    "Telegram daily-metrics: %s has no last_updated_at; falling back to %s",
+                    carsome_table,
+                    carsome_created_expr,
+                )
+                carsome_last_scraped_expr = carsome_created_expr
+
         # Carsome may not have listing_url; synthesize a stable identifier
         carsome_listing_expr = "CONCAT('carsome-', id::text)"
         if include_carsome and await _column_exists(conn, carsome_table, "reg_no"):
@@ -1338,7 +1367,8 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
             SELECT
                 LOWER(source) AS source,
                 listing_url,
-                information_ads_date::date AS information_ads_date,
+                {unified_created_expr} AS created_at,
+                {unified_last_scraped_expr} AS last_scraped_at,
                 cars_standard_id,
                 status
             FROM {unified_table}
@@ -1347,7 +1377,8 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
             SELECT
                 LOWER(COALESCE(source, 'carsome')) AS source,
                 {carsome_listing_expr} AS listing_url,
-                COALESCE(created_at::date, CURRENT_DATE) AS information_ads_date,
+                {carsome_created_expr} AS created_at,
+                {carsome_last_scraped_expr} AS last_scraped_at,
                 cars_standard_id,
                 status
             FROM {carsome_table}
@@ -1371,7 +1402,8 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
               SELECT
                 source,
                 COUNT(*) FILTER (
-                  WHERE information_ads_date = $1
+                  WHERE last_scraped_at >= $1::date
+                    AND last_scraped_at < ($1::date + INTERVAL '1 day')
                     AND LOWER(status) = ANY($2::text[])
                     AND cars_standard_id IS NOT NULL
                 ) AS today_count
@@ -1402,13 +1434,17 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
               (SELECT COUNT(*)
                FROM today_data td
                WHERE td.source = ANY($3::text[])
-                 AND td.information_ads_date = $1
+                 AND td.last_scraped_at >= $1::date
+                 AND td.last_scraped_at < ($1::date + INTERVAL '1 day')
                  AND LOWER(td.status) = ANY($2::text[])
                  AND td.cars_standard_id IS NOT NULL) AS total_today,
               (SELECT COUNT(DISTINCT td.listing_url)
                FROM today_data td
                WHERE td.source = ANY($3::text[])
-                 AND td.information_ads_date = $1
+                 AND td.created_at >= $1::date
+                 AND td.created_at < ($1::date + INTERVAL '1 day')
+                 AND td.last_scraped_at >= $1::date
+                 AND td.last_scraped_at < ($1::date + INTERVAL '1 day')
                  AND LOWER(td.status) = ANY($2::text[])
                  AND td.cars_standard_id IS NOT NULL) AS unique_today,
               (SELECT COUNT(*)

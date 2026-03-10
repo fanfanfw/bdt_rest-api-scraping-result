@@ -49,5 +49,5 @@ app.add_middleware(
 
 app.include_router(router, dependencies=[Depends(verify_api_key)])
 app.include_router(admin_router)
-app.include_router(django_router)  # Unlimited access for Django
-app.include_router(telegram_router)
+app.include_router(django_router, include_in_schema=False)  # Unlimited access for Django, Keep active, hide from docs
+app.include_router(telegram_router, include_in_schema=False)  # Keep active, hide from docs

@@ -398,6 +398,45 @@ def _build_price_vs_mileage_cte_for_source(source: Optional[str]) -> str:
 
     return f"WITH combined AS (\n{combined}\n)"
 
+
+def _build_combined_filters(
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+    source: Optional[str] = None,
+) -> Tuple[List[str], List[Any], int]:
+    conditions: List[str] = []
+    values: List[Any] = []
+    param_index = 1
+
+    if brand:
+        conditions.append(f"c.brand = ${param_index}")
+        values.append(brand.strip().upper())
+        param_index += 1
+
+    if model:
+        conditions.append(f"c.model = ${param_index}")
+        values.append(model.strip().upper())
+        param_index += 1
+
+    if variant:
+        conditions.append(f"c.variant = ${param_index}")
+        values.append(variant.strip().upper())
+        param_index += 1
+
+    if year:
+        conditions.append(f"c.year = ${param_index}")
+        values.append(year)
+        param_index += 1
+
+    if source:
+        conditions.append(f"c.source = ${param_index}")
+        values.append(source)
+        param_index += 1
+
+    return conditions, values, param_index
+
 # insert_or_update_data_into_local_db function removed - sync now handled by sync_cars.py
 
 # get_id_mapping function removed - no longer needed
@@ -458,35 +497,13 @@ async def get_price_vs_mileage_filtered(
         conn = await get_local_db_connection()
         owns_conn = True
     try:
-        conditions = []
-        values = []
-        param_index = 1  
-
-        if brand:
-            conditions.append(f"c.brand = ${param_index}")
-            values.append(brand.strip().upper())
-            param_index += 1
-        
-        if model:
-            conditions.append(f"c.model = ${param_index}")
-            values.append(model.strip().upper())
-            param_index += 1
-        
-        if variant:
-            conditions.append(f"c.variant = ${param_index}")
-            values.append(variant.strip().upper())
-            param_index += 1
-        
-        if year:
-            conditions.append(f"c.year = ${param_index}")
-            values.append(year)
-            param_index += 1
-
-        # Add source filter if specified
-        if source:
-            conditions.append(f"c.source = ${param_index}")
-            values.append(source)
-            param_index += 1
+        conditions, values, param_index = _build_combined_filters(
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            source=source,
+        )
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -608,35 +625,13 @@ async def get_price_vs_mileage_total_count(
         conn = await get_local_db_connection()
         owns_conn = True
     try:
-        conditions = []
-        values = []
-        param_index = 1  
-
-        if brand:
-            conditions.append(f"c.brand = ${param_index}")
-            values.append(brand.strip().upper())
-            param_index += 1
-        
-        if model:
-            conditions.append(f"c.model = ${param_index}")
-            values.append(model.strip().upper())
-            param_index += 1
-        
-        if variant:
-            conditions.append(f"c.variant = ${param_index}")
-            values.append(variant.strip().upper())
-            param_index += 1
-        
-        if year:
-            conditions.append(f"c.year = ${param_index}")
-            values.append(year)
-            param_index += 1
-
-        # Add source filter if specified
-        if source:
-            conditions.append(f"c.source = ${param_index}")
-            values.append(source)
-            param_index += 1
+        conditions, values, _ = _build_combined_filters(
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            source=source,
+        )
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -659,6 +654,132 @@ async def get_price_vs_mileage_total_count(
         _cache_set_total_count(cache_key, int(result))
         return result
 
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_dashboard_summary(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+    conn=None,
+) -> dict:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        conditions, values, _ = _build_combined_filters(
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            source=source,
+        )
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        combined_cte = _build_price_vs_mileage_cte_for_source(source)
+
+        query = f"""
+            {combined_cte}
+            SELECT
+                COUNT(*)::int AS data_points,
+                ROUND(AVG(c.price)::numeric, 2) AS avg_price,
+                ROUND(AVG(c.mileage)::numeric, 2) AS avg_mileage,
+                MAX(c.price)::int AS max_price,
+                MIN(c.price)::int AS min_price,
+                MAX(c.mileage)::int AS max_mileage
+            FROM combined c
+            WHERE {where_clause}
+        """
+        row = await conn.fetchrow(query, *values)
+
+        return {
+            "filters": {
+                "source": source,
+                "brand": brand,
+                "model": model,
+                "variant": variant,
+                "year": year,
+            },
+            "summary": {
+                "avg_price": float(row["avg_price"]) if row["avg_price"] is not None else None,
+                "avg_mileage": float(row["avg_mileage"]) if row["avg_mileage"] is not None else None,
+                "max_price": row["max_price"],
+                "min_price": row["min_price"],
+                "max_mileage": row["max_mileage"],
+                "data_points": row["data_points"] or 0,
+            },
+        }
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_dashboard_yearly_trends(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    conn=None,
+) -> dict:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        conditions, values, _ = _build_combined_filters(
+            brand=brand,
+            model=model,
+            variant=variant,
+            source=source,
+        )
+        conditions.append("c.year IS NOT NULL")
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        combined_cte = _build_price_vs_mileage_cte_for_source(source)
+
+        query = f"""
+            {combined_cte}
+            SELECT
+                c.year::int AS year,
+                COUNT(*)::int AS data_points,
+                ROUND(AVG(c.price)::numeric, 2) AS avg_price,
+                ROUND(AVG(c.mileage)::numeric, 2) AS avg_mileage,
+                MAX(c.price)::int AS max_price,
+                MIN(c.price)::int AS min_price,
+                MAX(c.mileage)::int AS max_mileage
+            FROM combined c
+            WHERE {where_clause}
+            GROUP BY c.year
+            ORDER BY c.year ASC
+        """
+        rows = await conn.fetch(query, *values)
+
+        data = []
+        for row in rows:
+            data.append({
+                "year": row["year"],
+                "data_points": row["data_points"],
+                "avg_price": float(row["avg_price"]) if row["avg_price"] is not None else None,
+                "avg_mileage": float(row["avg_mileage"]) if row["avg_mileage"] is not None else None,
+                "max_price": row["max_price"],
+                "min_price": row["min_price"],
+                "max_mileage": row["max_mileage"],
+            })
+
+        return {
+            "filters": {
+                "source": source,
+                "brand": brand,
+                "model": model,
+                "variant": variant,
+            },
+            "data": data,
+        }
     finally:
         if owns_conn and conn is not None:
             await conn.close()

@@ -6,7 +6,7 @@ from app.services import (
     create_api_key, clear_rate_limit, get_brands_list, get_models_list,
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
-    get_telegram_daily_metrics,
+    get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
 )
 from app.database import get_local_db_connection
 from typing import Optional
@@ -55,9 +55,9 @@ async def clear_rate_limit_endpoint(
 @router.get("/analytics/scatter_plot", tags=["Analytics"])
 async def scatter_plot(
         source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
-        brand: Optional[str] = Query(None),
-        model: Optional[str] = Query(None),
-        variant: Optional[str] = Query(None),
+        brand: Optional[str] = Query(None, example="TOYOTA"),
+        model: Optional[str] = Query(None, example="YARIS"),
+        variant: Optional[str] = Query(None, example="E"),
         year: Optional[int] = Query(None)
 ):
     try:
@@ -76,9 +76,9 @@ async def scatter_plot(
 @router.get("/analytics/price_vs_mileage", tags=["Analytics"])
 async def price_vs_mileage(
     source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
-    brand: Optional[str] = Query(None),
-    model: Optional[str] = Query(None),
-    variant: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
     year: Optional[int] = Query(None),
     limit: int = Query(100, ge=1, le=1000, description="Jumlah data per halaman"),
     offset: int = Query(0, ge=0, description="Offset data (untuk pagination)"),
@@ -122,6 +122,85 @@ async def price_vs_mileage(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await conn.close()
+
+
+@router.get("/analytics/dashboard/summary", tags=["Analytics"])
+async def analytics_dashboard_summary(
+    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
+    year: Optional[int] = Query(None),
+):
+    try:
+        return await get_dashboard_summary(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/dashboard/trends", tags=["Analytics"])
+async def analytics_dashboard_trends(
+    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
+):
+    try:
+        return await get_dashboard_yearly_trends(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lookup/brands", tags=["Lookup"])
+async def get_brands_lookup():
+    try:
+        return await get_brands_list()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lookup/models", tags=["Lookup"])
+async def get_models_lookup(
+    brand: str = Query(..., example="TOYOTA"),
+):
+    try:
+        return await get_models_list(brand)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lookup/variants", tags=["Lookup"])
+async def get_variants_lookup(
+    brand: str = Query(..., example="TOYOTA"),
+    model: str = Query(..., example="YARIS"),
+):
+    try:
+        return await get_variants_list(brand, model)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lookup/years", tags=["Lookup"])
+async def get_years_lookup(
+    brand: str = Query(..., example="TOYOTA"),
+    model: str = Query(..., example="YARIS"),
+    variant: str = Query(..., example="E"),
+):
+    try:
+        return await get_years_list(brand, model, variant)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Django Endpoints (Unlimited Access)

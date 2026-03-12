@@ -7,6 +7,7 @@ from app.services import (
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
+    get_dashboard_scatter_chart,
 )
 from app.database import get_local_db_connection
 from typing import Optional
@@ -157,6 +158,30 @@ async def analytics_dashboard_trends(
             brand=brand,
             model=model,
             variant=variant,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/dashboard/charts/scatter", tags=["Analytics"])
+async def analytics_dashboard_scatter_chart(
+    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
+    year: Optional[int] = Query(None),
+    limit: int = Query(500, ge=1, le=10000, description="Jumlah titik maksimum yang dikembalikan"),
+    offset: int = Query(0, ge=0, description="Offset data untuk pagination scatter"),
+):
+    try:
+        return await get_dashboard_scatter_chart(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            limit=limit,
+            offset=offset,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

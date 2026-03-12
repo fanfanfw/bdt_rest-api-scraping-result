@@ -785,6 +785,90 @@ async def get_dashboard_yearly_trends(
             await conn.close()
 
 
+async def get_dashboard_scatter_chart(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = 500,
+    offset: int = 0,
+    conn=None,
+) -> dict:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        data = await get_price_vs_mileage_filtered(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            limit=limit,
+            offset=offset,
+            sort_by="scraped_at",
+            sort_direction="desc",
+            conn=conn,
+        )
+        summary_payload = await get_dashboard_summary(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            conn=conn,
+        )
+        summary = summary_payload["summary"]
+        total = summary["data_points"]
+
+        return {
+            "filters": {
+                "source": source,
+                "brand": brand,
+                "model": model,
+                "variant": variant,
+                "year": year,
+            },
+            "chart": "price_vs_mileage_distribution",
+            "axes": {
+                "x": "mileage",
+                "x_unit": "km",
+                "y": "price",
+                "y_unit": "RM",
+            },
+            "averages": {
+                "price": summary["avg_price"],
+                "mileage": summary["avg_mileage"],
+            },
+            "meta": {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(data),
+            },
+            "data": [
+                {
+                    "x": row["mileage"],
+                    "y": row["price"],
+                    "year": row["year"],
+                    "source": row["source"],
+                    "brand": row["brand"],
+                    "model": row["model"],
+                    "variant": row["variant"],
+                    "scraped_at": row["scraped_at"],
+                    "ads_date": row["ads_date"],
+                }
+                for row in data
+            ],
+        }
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
 async def clear_rate_limit(api_key: str) -> dict:
     """
     Reset the request count and last reset time for a specific API key.

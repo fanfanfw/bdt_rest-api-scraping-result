@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS cars_unified (
     
     -- Location and contact
     location VARCHAR(255) NULL,
+    whatsapp_number TEXT[] NULL,
+    contact_seller TEXT NULL,
     
     -- Additional info
     information_ads TEXT NULL,

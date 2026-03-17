@@ -271,6 +271,10 @@ class CarDataSyncService:
         if images is not None and isinstance(images, str):
             images = [images]
 
+        whatsapp_number = data.get("whatsapp_number")
+        if whatsapp_number is not None and isinstance(whatsapp_number, str):
+            whatsapp_number = [whatsapp_number]
+
         normalized = {
             'source': source,
             'listing_id': str(data.get('listing_id')) if data.get('listing_id') is not None else None,
@@ -289,6 +293,8 @@ class CarDataSyncService:
             'fuel_type': self.normalize_field(data.get('fuel_type')),
             'price': data.get('price'),
             'location': self.normalize_field(data.get('location')),
+            'whatsapp_number': whatsapp_number,
+            'contact_seller': data.get('contact_seller'),
             'information_ads': data.get('information_ads'),
             'images': images,
             'status': data.get('status', 'active'),
@@ -366,7 +372,7 @@ class CarDataSyncService:
                 INSERT INTO cars_unified (
                     source, listing_url, listing_id, condition, brand, model, variant, series, type,
                     year, mileage, transmission, seat_capacity, engine_cc, fuel_type, price,
-                    location, information_ads, images, status,
+                    location, whatsapp_number, contact_seller, information_ads, images, status,
                     created_at, last_scraped_at, version, information_ads_date
                 ) VALUES %s
                 ON CONFLICT (source, listing_url)
@@ -387,6 +393,8 @@ class CarDataSyncService:
                     fuel_type = EXCLUDED.fuel_type,
                     price = EXCLUDED.price,
                     location = EXCLUDED.location,
+                    whatsapp_number = EXCLUDED.whatsapp_number,
+                    contact_seller = EXCLUDED.contact_seller,
                     information_ads = EXCLUDED.information_ads,
                     images = EXCLUDED.images,
                     status = EXCLUDED.status,
@@ -404,6 +412,7 @@ class CarDataSyncService:
                     data['brand'], data['model'], data['variant'], data.get('series'), data.get('type'),
                     data['year'], data['mileage'], data['transmission'], data['seat_capacity'],
                     data['engine_cc'], data['fuel_type'], data['price'], data['location'],
+                    data.get('whatsapp_number'), data.get('contact_seller'),
                     data['information_ads'], data['images'], data['status'],
                     data.get('created_at'), data['last_scraped_at'], data['version'],
                     data['information_ads_date']

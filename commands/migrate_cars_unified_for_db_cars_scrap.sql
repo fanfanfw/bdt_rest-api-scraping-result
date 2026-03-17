@@ -3,7 +3,8 @@
 --
 -- Changes:
 -- - Drop legacy columns sourced from old db_scrap_new: model_group, ads_tag
--- - Add new source columns from db_cars_scrap: listing_id, series, type, created_at
+-- - Add new source columns from db_cars_scrap: listing_id, series, type, created_at,
+--   whatsapp_number, contact_seller
 --
 -- Notes:
 -- - Uses IF EXISTS / IF NOT EXISTS to be re-runnable.
@@ -23,6 +24,12 @@ ALTER TABLE IF EXISTS public.cars_unified
 ALTER TABLE IF EXISTS public.cars_unified
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NULL;
 
+ALTER TABLE IF EXISTS public.cars_unified
+  ADD COLUMN IF NOT EXISTS whatsapp_number TEXT[] NULL;
+
+ALTER TABLE IF EXISTS public.cars_unified
+  ADD COLUMN IF NOT EXISTS contact_seller TEXT NULL;
+
 -- Align images with db_cars_scrap (TEXT[]).
 -- If images was previously a TEXT column, this coerces existing values into a
 -- single-element array; review if you need a smarter conversion.
@@ -34,6 +41,7 @@ BEGIN
     WHERE table_schema = 'public'
       AND table_name = 'cars_unified'
       AND column_name = 'images'
+      AND udt_name <> '_text'
   ) THEN
     EXECUTE $sql$
       ALTER TABLE public.cars_unified

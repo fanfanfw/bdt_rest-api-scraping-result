@@ -203,6 +203,7 @@ async def analytics_dashboard_competitor(
     model: Optional[str] = Query(None, example="YARIS"),
     variant: Optional[str] = Query(None, example="E"),
     year: Optional[int] = Query(None, ge=1900, le=2100),
+    status: Optional[str] = Query(None, description="Optional status filter. Use active, sold, or a comma-separated combination"),
     months: int = Query(1, ge=1, le=24, description="Lookback window in months"),
     limit: int = Query(10, ge=1, le=100, description="Number of rows to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
@@ -216,6 +217,7 @@ async def analytics_dashboard_competitor(
             variant=variant,
             year=year,
             months=months,
+            status=status,
             limit=limit,
             offset=offset,
         )

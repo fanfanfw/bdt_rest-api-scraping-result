@@ -30,6 +30,7 @@ TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
+_COMPETITOR_ALLOWED_STATUSES = {"active", "sold"}
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -898,6 +899,7 @@ async def get_dashboard_competitor_watch(
     variant: Optional[str] = None,
     year: Optional[int] = None,
     source: Optional[str] = None,
+    status: Optional[str] = None,
     months: int = 1,
     limit: int = 10,
     offset: int = 0,
@@ -910,13 +912,31 @@ async def get_dashboard_competitor_watch(
 
     try:
         normalized_source = _normalize_source(source)
+        status_values = ["active", "sold"]
+        if status and status.strip():
+            parsed_statuses: List[str] = []
+            for raw_status in status.split(","):
+                normalized_status = raw_status.strip().lower()
+                if not normalized_status:
+                    continue
+                if normalized_status not in _COMPETITOR_ALLOWED_STATUSES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid status value. Allowed values: active, sold",
+                    )
+                if normalized_status not in parsed_statuses:
+                    parsed_statuses.append(normalized_status)
+            if parsed_statuses:
+                status_values = parsed_statuses
+
         values: List[Any] = [months]
         where_conditions = ["""
-            c.status IN ('active', 'sold')
-            AND c.cars_standard_id IS NOT NULL
+            c.cars_standard_id IS NOT NULL
             AND c.information_ads_date IS NOT NULL
             AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => $1))::date
         """]
+        values.append(status_values)
+        where_conditions.append(f"LOWER(c.status) = ANY(${len(values)}::text[])")
 
         if normalized_source:
             values.append(normalized_source)
@@ -997,6 +1017,7 @@ async def get_dashboard_competitor_watch(
                 "model": model.strip().upper() if model else None,
                 "variant": variant.strip().upper() if variant else None,
                 "year": year,
+                "status": status_values,
             },
             meta=DashboardCompetitorWatchMeta(
                 total=total or 0,

@@ -893,8 +893,11 @@ def _compose_competitor_watch_model_name(
 
 
 async def get_dashboard_competitor_watch(
-    cars_standard_id: int,
-    year: int,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+    source: Optional[str] = None,
     months: int = 1,
     limit: int = 10,
     offset: int = 0,
@@ -906,22 +909,46 @@ async def get_dashboard_competitor_watch(
         owns_conn = True
 
     try:
-        base_params = [cars_standard_id, year, months]
-        where_clause = """
+        normalized_source = _normalize_source(source)
+        values: List[Any] = [months]
+        where_conditions = ["""
             c.status IN ('active', 'sold')
             AND c.cars_standard_id IS NOT NULL
-            AND c.cars_standard_id = $1
-            AND c.year = $2
             AND c.information_ads_date IS NOT NULL
-            AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => $3))::date
-        """
+            AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => $1))::date
+        """]
+
+        if normalized_source:
+            values.append(normalized_source)
+            where_conditions.append(f"c.source = ${len(values)}")
+
+        if brand:
+            values.append(brand.strip().upper())
+            where_conditions.append(f"cs.brand_norm = ${len(values)}")
+
+        if model:
+            values.append(model.strip().upper())
+            where_conditions.append(f"cs.model_norm = ${len(values)}")
+
+        if variant:
+            values.append(variant.strip().upper())
+            where_conditions.append(f"cs.variant_norm = ${len(values)}")
+
+        if year is not None:
+            values.append(year)
+            where_conditions.append(f"c.year = ${len(values)}")
+        where_clause = "\n            AND ".join(where_conditions)
 
         count_query = f"""
             SELECT COUNT(*)::int
             FROM {TB_UNIFIED} c
+            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
             WHERE {where_clause}
         """
-        total = await conn.fetchval(count_query, *base_params)
+        total = await conn.fetchval(count_query, *values)
+
+        limit_param = len(values) + 1
+        offset_param = len(values) + 2
 
         data_query = f"""
             SELECT
@@ -940,9 +967,9 @@ async def get_dashboard_competitor_watch(
             INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
             WHERE {where_clause}
             ORDER BY c.last_scraped_at DESC NULLS LAST, c.id DESC
-            LIMIT $4 OFFSET $5
+            LIMIT ${limit_param} OFFSET ${offset_param}
         """
-        rows = await conn.fetch(data_query, *base_params, limit, offset)
+        rows = await conn.fetch(data_query, *values, limit, offset)
 
         data: List[DashboardCompetitorWatchItem] = []
         for row in rows:
@@ -965,7 +992,10 @@ async def get_dashboard_competitor_watch(
 
         return DashboardCompetitorWatchResponse(
             filters={
-                "cars_standard_id": cars_standard_id,
+                "source": normalized_source,
+                "brand": brand.strip().upper() if brand else None,
+                "model": model.strip().upper() if model else None,
+                "variant": variant.strip().upper() if variant else None,
                 "year": year,
             },
             meta=DashboardCompetitorWatchMeta(

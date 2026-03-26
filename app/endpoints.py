@@ -55,12 +55,13 @@ async def clear_rate_limit_endpoint(
 
 @router.get("/analytics/scatter_plot", tags=["Analytics"])
 async def scatter_plot(
-        source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
+        source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
         brand: Optional[str] = Query(None, example="TOYOTA"),
         model: Optional[str] = Query(None, example="YARIS"),
         variant: Optional[str] = Query(None, example="E"),
         year: Optional[int] = Query(None)
 ):
+    """Return a scatter plot image for price versus mileage."""
     try:
         data = await get_price_vs_mileage_filtered(source, brand, model, variant, year)
 
@@ -76,16 +77,17 @@ async def scatter_plot(
 
 @router.get("/analytics/price_vs_mileage", tags=["Analytics"])
 async def price_vs_mileage(
-    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome (kosongkan jika datanya tanpa filter sumber)"),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
     brand: Optional[str] = Query(None, example="TOYOTA"),
     model: Optional[str] = Query(None, example="YARIS"),
     variant: Optional[str] = Query(None, example="E"),
     year: Optional[int] = Query(None),
-    limit: int = Query(100, ge=1, le=1000, description="Jumlah data per halaman"),
-    offset: int = Query(0, ge=0, description="Offset data (untuk pagination)"),
-    sort_by: Optional[str] = Query("scraped_at", description="Kolom untuk pengurutan. Options: scraped_at, ads_date"),
-    sort_direction: Optional[str] = Query("desc", description="Arah pengurutan. Options: asc, desc"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of rows to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    sort_by: Optional[str] = Query("scraped_at", description="Sort field. Options: scraped_at, ads_date"),
+    sort_direction: Optional[str] = Query("desc", description="Sort direction. Options: asc, desc"),
 ):
+    """Return normalized price versus mileage records."""
     conn = await get_local_db_connection()
     try:
         data = await get_price_vs_mileage_filtered(
@@ -127,12 +129,13 @@ async def price_vs_mileage(
 
 @router.get("/analytics/dashboard/summary", tags=["Analytics"])
 async def analytics_dashboard_summary(
-    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
     brand: Optional[str] = Query(None, example="TOYOTA"),
     model: Optional[str] = Query(None, example="YARIS"),
     variant: Optional[str] = Query(None, example="E"),
     year: Optional[int] = Query(None),
 ):
+    """Return aggregate dashboard summary metrics."""
     try:
         return await get_dashboard_summary(
             source=source,
@@ -147,11 +150,12 @@ async def analytics_dashboard_summary(
 
 @router.get("/analytics/dashboard/trends", tags=["Analytics"])
 async def analytics_dashboard_trends(
-    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
     brand: Optional[str] = Query(None, example="TOYOTA"),
     model: Optional[str] = Query(None, example="YARIS"),
     variant: Optional[str] = Query(None, example="E"),
 ):
+    """Return yearly trend metrics for the dashboard."""
     try:
         return await get_dashboard_yearly_trends(
             source=source,
@@ -165,14 +169,15 @@ async def analytics_dashboard_trends(
 
 @router.get("/analytics/dashboard/charts/scatter", tags=["Analytics"])
 async def analytics_dashboard_scatter_chart(
-    source: Optional[str] = Query(None, description="mudahmy, carlistmy atau carsome"),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
     brand: Optional[str] = Query(None, example="TOYOTA"),
     model: Optional[str] = Query(None, example="YARIS"),
     variant: Optional[str] = Query(None, example="E"),
     year: Optional[int] = Query(None),
-    limit: int = Query(500, ge=1, le=10000, description="Jumlah titik maksimum yang dikembalikan"),
-    offset: int = Query(0, ge=0, description="Offset data untuk pagination scatter"),
+    limit: int = Query(500, ge=1, le=10000, description="Maximum number of points to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset for scatter data"),
 ):
+    """Return dashboard scatter chart data."""
     try:
         return await get_dashboard_scatter_chart(
             source=source,
@@ -193,15 +198,22 @@ async def analytics_dashboard_scatter_chart(
     response_model=DashboardCompetitorWatchResponse,
 )
 async def analytics_dashboard_competitor(
-    cars_standard_id: int = Query(..., ge=1, description="cars_standard.id target competitor watch"),
-    year: int = Query(..., ge=1900, le=2100, description="Tahun listing yang harus sama persis"),
-    months: int = Query(1, ge=1, le=24, description="Rentang bulan ke belakang berdasarkan information_ads_date"),
-    limit: int = Query(10, ge=1, le=100, description="Jumlah data per halaman"),
-    offset: int = Query(0, ge=0, description="Offset data untuk pagination"),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy or carlistmy"),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    months: int = Query(1, ge=1, le=24, description="Lookback window in months"),
+    limit: int = Query(10, ge=1, le=100, description="Number of rows to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
+    """Return dashboard competitor watch rows."""
     try:
         return await get_dashboard_competitor_watch(
-            cars_standard_id=cars_standard_id,
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
             year=year,
             months=months,
             limit=limit,
@@ -213,6 +225,7 @@ async def analytics_dashboard_competitor(
 
 @router.get("/lookup/brands", tags=["Lookup"])
 async def get_brands_lookup():
+    """Return all normalized brands available in the dataset."""
     try:
         return await get_brands_list()
     except Exception as e:
@@ -223,6 +236,7 @@ async def get_brands_lookup():
 async def get_models_lookup(
     brand: str = Query(..., example="TOYOTA"),
 ):
+    """Return normalized models for the selected brand."""
     try:
         return await get_models_list(brand)
     except Exception as e:
@@ -234,6 +248,7 @@ async def get_variants_lookup(
     brand: str = Query(..., example="TOYOTA"),
     model: str = Query(..., example="YARIS"),
 ):
+    """Return normalized variants for the selected brand and model."""
     try:
         return await get_variants_list(brand, model)
     except Exception as e:
@@ -246,6 +261,7 @@ async def get_years_lookup(
     model: str = Query(..., example="YARIS"),
     variant: str = Query(..., example="E"),
 ):
+    """Return available years for the selected brand, model, and variant."""
     try:
         return await get_years_list(brand, model, variant)
     except Exception as e:

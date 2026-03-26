@@ -18,6 +18,9 @@ from app.models import (
     CarsStandardComparisonResult,
     CarsStandardSyncResult,
     ColumnDifference,
+    DashboardCompetitorWatchResponse,
+    DashboardCompetitorWatchMeta,
+    DashboardCompetitorWatchItem,
 )
 
 logger = logging.getLogger(__name__)
@@ -864,6 +867,115 @@ async def get_dashboard_scatter_chart(
                 for row in data
             ],
         }
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+def _compose_competitor_watch_model_name(
+    brand: Optional[str],
+    model: Optional[str],
+    variant: Optional[str],
+    year: Optional[int],
+) -> str:
+    parts: List[str] = []
+    for value in (brand, model):
+        if value and value.strip():
+            parts.append(value.strip())
+
+    if variant and variant.strip() and variant.strip().upper() not in {"NO VARIANT", "-"}:
+        parts.append(variant.strip())
+
+    if year is not None:
+        parts.append(str(year))
+
+    return " ".join(parts)
+
+
+async def get_dashboard_competitor_watch(
+    cars_standard_id: int,
+    year: int,
+    months: int = 1,
+    limit: int = 10,
+    offset: int = 0,
+    conn=None,
+) -> DashboardCompetitorWatchResponse:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        base_params = [cars_standard_id, year, months]
+        where_clause = """
+            c.status IN ('active', 'sold')
+            AND c.cars_standard_id IS NOT NULL
+            AND c.cars_standard_id = $1
+            AND c.year = $2
+            AND c.information_ads_date IS NOT NULL
+            AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => $3))::date
+        """
+
+        count_query = f"""
+            SELECT COUNT(*)::int
+            FROM {TB_UNIFIED} c
+            WHERE {where_clause}
+        """
+        total = await conn.fetchval(count_query, *base_params)
+
+        data_query = f"""
+            SELECT
+                c.id,
+                c.seller_name,
+                c.source,
+                c.location,
+                c.price,
+                c.mileage,
+                c.last_scraped_at,
+                c.year,
+                cs.brand_norm,
+                cs.model_norm,
+                cs.variant_norm
+            FROM {TB_UNIFIED} c
+            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
+            WHERE {where_clause}
+            ORDER BY c.last_scraped_at DESC NULLS LAST, c.id DESC
+            LIMIT $4 OFFSET $5
+        """
+        rows = await conn.fetch(data_query, *base_params, limit, offset)
+
+        data: List[DashboardCompetitorWatchItem] = []
+        for row in rows:
+            data.append(
+                DashboardCompetitorWatchItem(
+                    competitor=row["seller_name"] or row["source"],
+                    source=row["source"],
+                    location=row["location"],
+                    model=_compose_competitor_watch_model_name(
+                        row["brand_norm"],
+                        row["model_norm"],
+                        row["variant_norm"],
+                        row["year"],
+                    ),
+                    listed_price=row["price"],
+                    distance=row["mileage"],
+                    last_updated=row["last_scraped_at"],
+                )
+            )
+
+        return DashboardCompetitorWatchResponse(
+            filters={
+                "cars_standard_id": cars_standard_id,
+                "year": year,
+            },
+            meta=DashboardCompetitorWatchMeta(
+                total=total or 0,
+                limit=limit,
+                offset=offset,
+                months=months,
+            ),
+            data=data,
+        )
     finally:
         if owns_conn and conn is not None:
             await conn.close()

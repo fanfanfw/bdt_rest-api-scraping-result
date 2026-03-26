@@ -7,13 +7,13 @@ from app.services import (
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
-    get_dashboard_scatter_chart,
+    get_dashboard_scatter_chart, get_dashboard_competitor_watch,
 )
 from app.database import get_local_db_connection
-from typing import Optional
 from app.models import (
     APIKeyCreateRequest,
     APIKeyCreateResponse,
+    DashboardCompetitorWatchResponse,
     TelegramDailyMetricsResponse,
 )
 import os
@@ -180,6 +180,30 @@ async def analytics_dashboard_scatter_chart(
             model=model,
             variant=variant,
             year=year,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/analytics/dashboard/competitor",
+    tags=["Analytics"],
+    response_model=DashboardCompetitorWatchResponse,
+)
+async def analytics_dashboard_competitor(
+    cars_standard_id: int = Query(..., ge=1, description="cars_standard.id target competitor watch"),
+    year: int = Query(..., ge=1900, le=2100, description="Tahun listing yang harus sama persis"),
+    months: int = Query(1, ge=1, le=24, description="Rentang bulan ke belakang berdasarkan information_ads_date"),
+    limit: int = Query(10, ge=1, le=100, description="Jumlah data per halaman"),
+    offset: int = Query(0, ge=0, description="Offset data untuk pagination"),
+):
+    try:
+        return await get_dashboard_competitor_watch(
+            cars_standard_id=cars_standard_id,
+            year=year,
+            months=months,
             limit=limit,
             offset=offset,
         )

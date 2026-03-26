@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from pydantic import BaseModel, Field
-from typing import Any, List
+from typing import Any, List, Optional
 
 class SyncDataDetail(BaseModel):
     total_fetched: int
@@ -69,3 +69,26 @@ class TelegramDailyMetricsResponse(BaseModel):
     sources: List[str]
     rows: List[TelegramSourceMetric]
     totals: TelegramTotals
+
+
+class DashboardCompetitorWatchItem(BaseModel):
+    competitor: str
+    source: str
+    location: Optional[str] = None
+    model: str
+    listed_price: Optional[int] = None
+    distance: Optional[int] = None
+    last_updated: Optional[datetime] = None
+
+
+class DashboardCompetitorWatchMeta(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    months: int
+
+
+class DashboardCompetitorWatchResponse(BaseModel):
+    filters: dict
+    meta: DashboardCompetitorWatchMeta
+    data: List[DashboardCompetitorWatchItem]

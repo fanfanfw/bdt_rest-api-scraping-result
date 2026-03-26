@@ -4,7 +4,7 @@
 -- Changes:
 -- - Drop legacy columns sourced from old db_scrap_new: model_group, ads_tag
 -- - Add new source columns from db_cars_scrap: listing_id, series, type, created_at,
---   whatsapp_number, contact_seller
+--   seller_name, whatsapp_number, contact_seller
 --
 -- Notes:
 -- - Uses IF EXISTS / IF NOT EXISTS to be re-runnable.
@@ -23,6 +23,9 @@ ALTER TABLE IF EXISTS public.cars_unified
 
 ALTER TABLE IF EXISTS public.cars_unified
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NULL;
+
+ALTER TABLE IF EXISTS public.cars_unified
+  ADD COLUMN IF NOT EXISTS seller_name TEXT NULL;
 
 ALTER TABLE IF EXISTS public.cars_unified
   ADD COLUMN IF NOT EXISTS whatsapp_number TEXT[] NULL;

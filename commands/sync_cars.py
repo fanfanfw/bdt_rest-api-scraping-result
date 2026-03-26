@@ -96,6 +96,15 @@ class CarDataSyncService:
     def __init__(self, config: DatabaseConfig):
         self.config = config
 
+    def clean_optional_text(self, text):
+        """Trim display text while preserving original casing."""
+        if text is None:
+            return None
+        text_str = str(text).strip()
+        if text_str in ["-", "N/A", "", "null", "NULL"]:
+            return None
+        return text_str
+
     def normalize_field(self, text, default_value=None):
         """
         Normalize field text with improved flow:
@@ -293,6 +302,7 @@ class CarDataSyncService:
             'fuel_type': self.normalize_field(data.get('fuel_type')),
             'price': data.get('price'),
             'location': self.normalize_field(data.get('location')),
+            'seller_name': self.clean_optional_text(data.get('seller_name')),
             'whatsapp_number': whatsapp_number,
             'contact_seller': data.get('contact_seller'),
             'information_ads': data.get('information_ads'),
@@ -372,7 +382,7 @@ class CarDataSyncService:
                 INSERT INTO cars_unified (
                     source, listing_url, listing_id, condition, brand, model, variant, series, type,
                     year, mileage, transmission, seat_capacity, engine_cc, fuel_type, price,
-                    location, whatsapp_number, contact_seller, information_ads, images, status,
+                    location, seller_name, whatsapp_number, contact_seller, information_ads, images, status,
                     created_at, last_scraped_at, version, information_ads_date
                 ) VALUES %s
                 ON CONFLICT (source, listing_url)
@@ -393,6 +403,7 @@ class CarDataSyncService:
                     fuel_type = EXCLUDED.fuel_type,
                     price = EXCLUDED.price,
                     location = EXCLUDED.location,
+                    seller_name = EXCLUDED.seller_name,
                     whatsapp_number = EXCLUDED.whatsapp_number,
                     contact_seller = EXCLUDED.contact_seller,
                     information_ads = EXCLUDED.information_ads,
@@ -412,7 +423,7 @@ class CarDataSyncService:
                     data['brand'], data['model'], data['variant'], data.get('series'), data.get('type'),
                     data['year'], data['mileage'], data['transmission'], data['seat_capacity'],
                     data['engine_cc'], data['fuel_type'], data['price'], data['location'],
-                    data.get('whatsapp_number'), data.get('contact_seller'),
+                    data.get('seller_name'), data.get('whatsapp_number'), data.get('contact_seller'),
                     data['information_ads'], data['images'], data['status'],
                     data.get('created_at'), data['last_scraped_at'], data['version'],
                     data['information_ads_date']

@@ -208,7 +208,7 @@ async def analytics_dashboard_scatter_chart(
     response_model=DashboardCompetitorBulkResponse,
     include_in_schema=False,
 )
-async def analytics_dashboard_competitor_bulk(
+async def analytics_dashboard_competitor(
     payload: DashboardCompetitorBulkRequest,
 ):
     """Return competitor watch results for multiple vehicles in one request."""

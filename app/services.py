@@ -18,9 +18,18 @@ from app.models import (
     CarsStandardComparisonResult,
     CarsStandardSyncResult,
     ColumnDifference,
-    DashboardCompetitorWatchResponse,
-    DashboardCompetitorWatchMeta,
-    DashboardCompetitorWatchItem,
+    DashboardCompetitorBulkMeta,
+    DashboardCompetitorBulkRequest,
+    DashboardCompetitorBulkResponse,
+    DashboardCompetitorBulkResultItem,
+    DashboardCompetitorResult,
+    DashboardCompetitorResultMeta,
+    DashboardCompetitorResultRow,
+    DashboardCompetitorResultSummary,
+    InventoryPriceMonitorRequest,
+    InventoryPriceMonitorResponse,
+    InventoryPriceMonitorMeta,
+    InventoryPriceMonitorResultItem,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +61,107 @@ def _normalize_source(source: Optional[str]) -> Optional[str]:
         return None
     normalized = source.strip().lower()
     return normalized or None
+
+
+def _parse_competitor_statuses(status: Optional[str]) -> List[str]:
+    status_values = ["active", "sold"]
+    if status and status.strip():
+        parsed_statuses: List[str] = []
+        for raw_status in status.split(","):
+            normalized_status = raw_status.strip().lower()
+            if not normalized_status:
+                continue
+            if normalized_status not in _COMPETITOR_ALLOWED_STATUSES:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid status value. Allowed values: active, sold",
+                )
+            if normalized_status not in parsed_statuses:
+                parsed_statuses.append(normalized_status)
+        if parsed_statuses:
+            status_values = parsed_statuses
+    return status_values
+
+
+def _build_competitor_market_filters(
+    months: int,
+    status_values: List[str],
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+) -> Tuple[List[str], List[Any], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    normalized_source = _normalize_source(source)
+    normalized_brand = brand.strip().upper() if brand else None
+    normalized_model = model.strip().upper() if model else None
+    normalized_variant = variant.strip().upper() if variant else None
+
+    values: List[Any] = [months, status_values]
+    where_conditions = [
+        "c.cars_standard_id IS NOT NULL",
+        "c.information_ads_date IS NOT NULL",
+        "c.information_ads_date >= (CURRENT_DATE - make_interval(months => $1))::date",
+        "LOWER(c.status) = ANY($2::text[])",
+    ]
+
+    if normalized_source:
+        values.append(normalized_source)
+        where_conditions.append(f"c.source = ${len(values)}")
+
+    if normalized_brand:
+        values.append(normalized_brand)
+        where_conditions.append(f"cs.brand_norm = ${len(values)}")
+
+    if normalized_model:
+        values.append(normalized_model)
+        where_conditions.append(f"cs.model_norm = ${len(values)}")
+
+    if normalized_variant:
+        values.append(normalized_variant)
+        where_conditions.append(f"cs.variant_norm = ${len(values)}")
+
+    if year is not None:
+        values.append(year)
+        where_conditions.append(f"c.year = ${len(values)}")
+
+    return (
+        where_conditions,
+        values,
+        normalized_source,
+        normalized_brand,
+        normalized_model,
+        normalized_variant,
+    )
+
+
+async def _get_competitor_market_summary(
+    conn,
+    where_clause: str,
+    values: List[Any],
+    your_price: Optional[int] = None,
+) -> DashboardCompetitorResultSummary:
+    summary_query = f"""
+        SELECT
+            COUNT(*)::int AS competitor_count,
+            ROUND(AVG(c.price)::numeric, 2) AS market_average
+        FROM {TB_UNIFIED} c
+        INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
+        WHERE {where_clause}
+    """
+    row = await conn.fetchrow(summary_query, *values)
+    competitor_count = row["competitor_count"] or 0
+    market_average = float(row["market_average"]) if row["market_average"] is not None else None
+    gap = None
+    if your_price is not None and market_average is not None:
+        gap = round(float(your_price) - market_average, 2)
+
+    return DashboardCompetitorResultSummary(
+        competitor_count=competitor_count,
+        market_average=market_average,
+        your_price=your_price,
+        gap=gap,
+    )
 
 
 def _cache_get_total_count(key):
@@ -893,79 +1003,50 @@ def _compose_competitor_watch_model_name(
     return " ".join(parts)
 
 
-async def get_dashboard_competitor_watch(
+async def _get_dashboard_competitor_result(
     brand: Optional[str] = None,
     model: Optional[str] = None,
     variant: Optional[str] = None,
     year: Optional[int] = None,
     source: Optional[str] = None,
     status: Optional[str] = None,
+    your_price: Optional[int] = None,
     months: int = 1,
     limit: int = 10,
     offset: int = 0,
     conn=None,
-) -> DashboardCompetitorWatchResponse:
+) -> DashboardCompetitorResult:
     owns_conn = False
     if conn is None:
         conn = await get_local_db_connection()
         owns_conn = True
 
     try:
-        normalized_source = _normalize_source(source)
-        status_values = ["active", "sold"]
-        if status and status.strip():
-            parsed_statuses: List[str] = []
-            for raw_status in status.split(","):
-                normalized_status = raw_status.strip().lower()
-                if not normalized_status:
-                    continue
-                if normalized_status not in _COMPETITOR_ALLOWED_STATUSES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid status value. Allowed values: active, sold",
-                    )
-                if normalized_status not in parsed_statuses:
-                    parsed_statuses.append(normalized_status)
-            if parsed_statuses:
-                status_values = parsed_statuses
-
-        values: List[Any] = [months]
-        where_conditions = ["""
-            c.cars_standard_id IS NOT NULL
-            AND c.information_ads_date IS NOT NULL
-            AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => $1))::date
-        """]
-        values.append(status_values)
-        where_conditions.append(f"LOWER(c.status) = ANY(${len(values)}::text[])")
-
-        if normalized_source:
-            values.append(normalized_source)
-            where_conditions.append(f"c.source = ${len(values)}")
-
-        if brand:
-            values.append(brand.strip().upper())
-            where_conditions.append(f"cs.brand_norm = ${len(values)}")
-
-        if model:
-            values.append(model.strip().upper())
-            where_conditions.append(f"cs.model_norm = ${len(values)}")
-
-        if variant:
-            values.append(variant.strip().upper())
-            where_conditions.append(f"cs.variant_norm = ${len(values)}")
-
-        if year is not None:
-            values.append(year)
-            where_conditions.append(f"c.year = ${len(values)}")
+        status_values = _parse_competitor_statuses(status)
+        (
+            where_conditions,
+            values,
+            normalized_source,
+            normalized_brand,
+            normalized_model,
+            normalized_variant,
+        ) = _build_competitor_market_filters(
+            months=months,
+            status_values=status_values,
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+        )
         where_clause = "\n            AND ".join(where_conditions)
-
-        count_query = f"""
-            SELECT COUNT(*)::int
-            FROM {TB_UNIFIED} c
-            INNER JOIN {TB_CARS_STANDARD} cs ON cs.id = c.cars_standard_id
-            WHERE {where_clause}
-        """
-        total = await conn.fetchval(count_query, *values)
+        summary = await _get_competitor_market_summary(
+            conn=conn,
+            where_clause=where_clause,
+            values=values,
+            your_price=your_price,
+        )
+        total = summary.competitor_count
 
         limit_param = len(values) + 1
         offset_param = len(values) + 2
@@ -991,11 +1072,11 @@ async def get_dashboard_competitor_watch(
         """
         rows = await conn.fetch(data_query, *values, limit, offset)
 
-        data: List[DashboardCompetitorWatchItem] = []
+        data: List[DashboardCompetitorResultRow] = []
         for row in rows:
             data.append(
-                DashboardCompetitorWatchItem(
-                    competitor=row["seller_name"] or row["source"],
+                DashboardCompetitorResultRow(
+                    competitor=row["seller_name"],
                     source=row["source"],
                     location=row["location"],
                     model=_compose_competitor_watch_model_name(
@@ -1005,27 +1086,143 @@ async def get_dashboard_competitor_watch(
                         row["year"],
                     ),
                     listed_price=row["price"],
+                    vs_your_price=(row["price"] - your_price) if your_price is not None and row["price"] is not None else None,
                     distance=row["mileage"],
                     last_updated=row["last_scraped_at"],
                 )
             )
 
-        return DashboardCompetitorWatchResponse(
+        return DashboardCompetitorResult(
             filters={
                 "source": normalized_source,
-                "brand": brand.strip().upper() if brand else None,
-                "model": model.strip().upper() if model else None,
-                "variant": variant.strip().upper() if variant else None,
+                "brand": normalized_brand,
+                "model": normalized_model,
+                "variant": normalized_variant,
                 "year": year,
                 "status": status_values,
+                "your_price": your_price,
             },
-            meta=DashboardCompetitorWatchMeta(
+            summary=summary,
+            meta=DashboardCompetitorResultMeta(
                 total=total or 0,
                 limit=limit,
                 offset=offset,
                 months=months,
             ),
             data=data,
+        )
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_inventory_price_monitor(
+    payload: InventoryPriceMonitorRequest,
+    conn=None,
+) -> InventoryPriceMonitorResponse:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        status_values = _parse_competitor_statuses(payload.status)
+        results: List[InventoryPriceMonitorResultItem] = []
+
+        for item in payload.items:
+            where_conditions, values, _, normalized_brand, normalized_model, normalized_variant = _build_competitor_market_filters(
+                months=payload.months,
+                status_values=status_values,
+                source=payload.source,
+                brand=item.brand,
+                model=item.model,
+                variant=item.variant,
+                year=item.year,
+            )
+            where_clause = "\n            AND ".join(where_conditions)
+            summary = await _get_competitor_market_summary(
+                conn=conn,
+                where_clause=where_clause,
+                values=values,
+                your_price=item.your_price,
+            )
+
+            results.append(
+                InventoryPriceMonitorResultItem(
+                    brand=normalized_brand or item.brand.strip().upper(),
+                    model=normalized_model or item.model.strip().upper(),
+                    variant=normalized_variant or item.variant.strip().upper(),
+                    year=item.year,
+                    vehicle=_compose_competitor_watch_model_name(
+                        normalized_brand or item.brand.strip().upper(),
+                        normalized_model or item.model.strip().upper(),
+                        normalized_variant or item.variant.strip().upper(),
+                        item.year,
+                    ),
+                    your_price=item.your_price,
+                    market_average=summary.market_average,
+                    gap=summary.gap,
+                    competitor_count=summary.competitor_count,
+                )
+            )
+
+        return InventoryPriceMonitorResponse(
+            meta=InventoryPriceMonitorMeta(
+                total=len(results),
+                months=payload.months,
+                source=_normalize_source(payload.source),
+                status=status_values,
+            ),
+            data=results,
+        )
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_dashboard_competitor_watch_bulk(
+    payload: DashboardCompetitorBulkRequest,
+    conn=None,
+) -> DashboardCompetitorBulkResponse:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        status_values = _parse_competitor_statuses(payload.status)
+        results: List[DashboardCompetitorBulkResultItem] = []
+
+        for item in payload.items:
+            result = await _get_dashboard_competitor_result(
+                source=payload.source,
+                brand=item.brand,
+                model=item.model,
+                variant=item.variant,
+                year=item.year,
+                status=",".join(status_values),
+                your_price=item.your_price,
+                months=payload.months,
+                limit=payload.limit,
+                offset=payload.offset,
+                conn=conn,
+            )
+            results.append(
+                DashboardCompetitorBulkResultItem(
+                    result=result,
+                )
+            )
+
+        return DashboardCompetitorBulkResponse(
+            meta=DashboardCompetitorBulkMeta(
+                total=len(results),
+                months=payload.months,
+                limit=payload.limit,
+                offset=payload.offset,
+                source=_normalize_source(payload.source),
+                status=status_values,
+            ),
+            data=results,
         )
     finally:
         if owns_conn and conn is not None:

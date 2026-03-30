@@ -7,13 +7,18 @@ from app.services import (
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
-    get_dashboard_scatter_chart, get_dashboard_competitor_watch,
+    get_dashboard_competitor_watch_bulk,
+    get_dashboard_scatter_chart,
+    get_inventory_price_monitor,
 )
 from app.database import get_local_db_connection
 from app.models import (
     APIKeyCreateRequest,
     APIKeyCreateResponse,
-    DashboardCompetitorWatchResponse,
+    DashboardCompetitorBulkRequest,
+    DashboardCompetitorBulkResponse,
+    InventoryPriceMonitorRequest,
+    InventoryPriceMonitorResponse,
     TelegramDailyMetricsResponse,
 )
 import os
@@ -192,35 +197,38 @@ async def analytics_dashboard_scatter_chart(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get(
+@router.post(
     "/analytics/dashboard/competitor",
     tags=["Analytics"],
-    response_model=DashboardCompetitorWatchResponse,
+    response_model=DashboardCompetitorBulkResponse,
 )
-async def analytics_dashboard_competitor(
-    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy or carlistmy"),
-    brand: Optional[str] = Query(None, example="TOYOTA"),
-    model: Optional[str] = Query(None, example="YARIS"),
-    variant: Optional[str] = Query(None, example="E"),
-    year: Optional[int] = Query(None, ge=1900, le=2100),
-    status: Optional[str] = Query(None, description="Optional status filter. Use active, sold, or a comma-separated combination"),
-    months: int = Query(1, ge=1, le=24, description="Lookback window in months"),
-    limit: int = Query(10, ge=1, le=100, description="Number of rows to return"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
+@router.post(
+    "/analytics/dashboard/competitor/",
+    tags=["Analytics"],
+    response_model=DashboardCompetitorBulkResponse,
+    include_in_schema=False,
+)
+async def analytics_dashboard_competitor_bulk(
+    payload: DashboardCompetitorBulkRequest,
 ):
-    """Return dashboard competitor watch rows."""
+    """Return competitor watch results for multiple vehicles in one request."""
     try:
-        return await get_dashboard_competitor_watch(
-            source=source,
-            brand=brand,
-            model=model,
-            variant=variant,
-            year=year,
-            months=months,
-            status=status,
-            limit=limit,
-            offset=offset,
-        )
+        return await get_dashboard_competitor_watch_bulk(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/analytics/dashboard/inventory-price-monitor",
+    tags=["Analytics"],
+    response_model=InventoryPriceMonitorResponse,
+)
+async def analytics_dashboard_inventory_price_monitor(
+    payload: InventoryPriceMonitorRequest,
+):
+    """Return market average and gap for multiple inventory vehicles."""
+    try:
+        return await get_inventory_price_monitor(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

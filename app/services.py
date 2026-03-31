@@ -871,6 +871,7 @@ async def get_dashboard_detail_price(
                 MIN(c.price)::int AS lowest_price,
                 ROUND(AVG(c.price)::numeric, 2) AS average_price,
                 MAX(c.price)::int AS highest_price,
+                MIN(c.last_scraped_at) AS first_seen_at,
                 MAX(c.last_scraped_at) AS last_updated
             FROM combined c
             WHERE {where_clause}
@@ -888,6 +889,7 @@ async def get_dashboard_detail_price(
             lowest_price=row["lowest_price"],
             average_price=float(row["average_price"]) if row["average_price"] is not None else None,
             highest_price=row["highest_price"],
+            first_seen_at=row["first_seen_at"],
             last_updated=row["last_updated"],
         )
     finally:

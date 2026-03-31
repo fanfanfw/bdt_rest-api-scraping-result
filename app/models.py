@@ -188,4 +188,5 @@ class DashboardDetailPriceResponse(BaseModel):
     lowest_price: Optional[int] = None
     average_price: Optional[float] = None
     highest_price: Optional[int] = None
+    first_seen_at: Optional[datetime] = None
     last_updated: Optional[datetime] = None

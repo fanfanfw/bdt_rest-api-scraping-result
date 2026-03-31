@@ -18,6 +18,7 @@ from app.models import (
     CarsStandardComparisonResult,
     CarsStandardSyncResult,
     ColumnDifference,
+    DashboardDetailPriceResponse,
     DashboardCompetitorBulkMeta,
     DashboardCompetitorBulkRequest,
     DashboardCompetitorBulkResponse,
@@ -828,6 +829,67 @@ async def get_dashboard_summary(
                 "data_points": row["data_points"] or 0,
             },
         }
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_dashboard_detail_price(
+    brand: str,
+    model: str,
+    variant: str,
+    year: int,
+    your_price: int,
+    source: Optional[str] = None,
+    conn=None,
+) -> DashboardDetailPriceResponse:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        normalized_source = _normalize_source(source)
+        normalized_brand = brand.strip().upper()
+        normalized_model = model.strip().upper()
+        normalized_variant = variant.strip().upper()
+
+        conditions, values, _ = _build_combined_filters(
+            brand=normalized_brand,
+            model=normalized_model,
+            variant=normalized_variant,
+            year=year,
+            source=normalized_source,
+        )
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        combined_cte = _build_price_vs_mileage_cte_for_source(normalized_source)
+
+        query = f"""
+            {combined_cte}
+            SELECT
+                COUNT(*)::int AS data_points,
+                MIN(c.price)::int AS lowest_price,
+                ROUND(AVG(c.price)::numeric, 2) AS average_price,
+                MAX(c.price)::int AS highest_price,
+                MAX(c.last_scraped_at) AS last_updated
+            FROM combined c
+            WHERE {where_clause}
+        """
+        row = await conn.fetchrow(query, *values)
+
+        return DashboardDetailPriceResponse(
+            source=normalized_source,
+            brand=normalized_brand,
+            model=normalized_model,
+            variant=normalized_variant,
+            year=year,
+            your_price=your_price,
+            data_points=row["data_points"] or 0,
+            lowest_price=row["lowest_price"],
+            average_price=float(row["average_price"]) if row["average_price"] is not None else None,
+            highest_price=row["highest_price"],
+            last_updated=row["last_updated"],
+        )
     finally:
         if owns_conn and conn is not None:
             await conn.close()

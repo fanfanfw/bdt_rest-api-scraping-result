@@ -9,12 +9,14 @@ from app.services import (
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
     get_dashboard_competitor_watch_bulk,
     get_dashboard_scatter_chart,
+    get_dashboard_detail_price,
     get_inventory_price_monitor,
 )
 from app.database import get_local_db_connection
 from app.models import (
     APIKeyCreateRequest,
     APIKeyCreateResponse,
+    DashboardDetailPriceResponse,
     DashboardCompetitorBulkRequest,
     DashboardCompetitorBulkResponse,
     InventoryPriceMonitorRequest,
@@ -192,6 +194,33 @@ async def analytics_dashboard_scatter_chart(
             year=year,
             limit=limit,
             offset=offset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/analytics/dashboard/detail-price",
+    tags=["Analytics"],
+    response_model=DashboardDetailPriceResponse,
+)
+async def analytics_dashboard_detail_price(
+    brand: str = Query(..., example="TOYOTA"),
+    model: str = Query(..., example="YARIS"),
+    variant: str = Query(..., example="E"),
+    year: int = Query(..., example=2020),
+    your_price: int = Query(..., example=65500),
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
+):
+    """Return detail price metrics for one vehicle."""
+    try:
+        return await get_dashboard_detail_price(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            your_price=your_price,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

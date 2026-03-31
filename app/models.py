@@ -175,3 +175,17 @@ class InventoryPriceMonitorResultItem(BaseModel):
 class InventoryPriceMonitorResponse(BaseModel):
     meta: InventoryPriceMonitorMeta
     data: List[InventoryPriceMonitorResultItem]
+
+
+class DashboardDetailPriceResponse(BaseModel):
+    source: Optional[str] = None
+    brand: str
+    model: str
+    variant: str
+    year: int
+    your_price: int
+    data_points: int
+    lowest_price: Optional[int] = None
+    average_price: Optional[float] = None
+    highest_price: Optional[int] = None
+    last_updated: Optional[datetime] = None

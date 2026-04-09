@@ -9,6 +9,7 @@ from app.services import (
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
     get_dashboard_competitor_watch_bulk,
     get_dashboard_scatter_chart,
+    get_dashboard_price_trend_chart,
     get_dashboard_detail_price,
     get_inventory_price_monitor,
 )
@@ -21,6 +22,7 @@ from app.models import (
     DashboardCompetitorBulkResponse,
     InventoryPriceMonitorRequest,
     InventoryPriceMonitorResponse,
+    PriceTrendResponse,
     TelegramDailyMetricsResponse,
 )
 import os
@@ -194,6 +196,33 @@ async def analytics_dashboard_scatter_chart(
             year=year,
             limit=limit,
             offset=offset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/analytics/dashboard/charts/price-trend",
+    tags=["Analytics"],
+    response_model=PriceTrendResponse,
+)
+async def analytics_dashboard_price_trend_chart(
+    source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
+    brand: Optional[str] = Query(None, example="TOYOTA"),
+    model: Optional[str] = Query(None, example="YARIS"),
+    variant: Optional[str] = Query(None, example="E"),
+    year: Optional[int] = Query(None),
+    days: int = Query(30, ge=1, le=365, description="Number of calendar days to include, ending on today"),
+):
+    """Return daily average price trend data based on information_ads_date."""
+    try:
+        return await get_dashboard_price_trend_chart(
+            source=source,
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            days=days,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

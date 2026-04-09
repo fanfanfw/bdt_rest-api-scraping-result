@@ -190,3 +190,46 @@ class DashboardDetailPriceResponse(BaseModel):
     highest_price: Optional[int] = None
     first_seen_at: Optional[datetime] = None
     last_updated: Optional[datetime] = None
+
+
+class PriceTrendFilters(BaseModel):
+    source: Optional[str] = None
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    variant: Optional[str] = None
+    year: Optional[int] = None
+    days: int
+    date_field: str
+
+
+class PriceTrendSummary(BaseModel):
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    start_avg_price: Optional[float] = None
+    end_avg_price: Optional[float] = None
+    change_amount: Optional[float] = None
+    change_percent: Optional[float] = None
+    trend_direction: str
+    lowest_avg_price: Optional[float] = None
+    highest_avg_price: Optional[float] = None
+
+
+class PriceTrendMeta(BaseModel):
+    granularity: str
+    total_days: int
+    days_with_data: int
+
+
+class PriceTrendPoint(BaseModel):
+    date: date
+    avg_price: Optional[float] = None
+    min_price: Optional[int] = None
+    max_price: Optional[int] = None
+    listing_count: int
+
+
+class PriceTrendResponse(BaseModel):
+    filters: PriceTrendFilters
+    summary: PriceTrendSummary
+    meta: PriceTrendMeta
+    data: List[PriceTrendPoint]

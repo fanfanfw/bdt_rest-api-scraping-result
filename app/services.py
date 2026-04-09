@@ -31,6 +31,11 @@ from app.models import (
     InventoryPriceMonitorResponse,
     InventoryPriceMonitorMeta,
     InventoryPriceMonitorResultItem,
+    PriceTrendFilters,
+    PriceTrendMeta,
+    PriceTrendPoint,
+    PriceTrendResponse,
+    PriceTrendSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -1042,6 +1047,136 @@ async def get_dashboard_scatter_chart(
                 for row in data
             ],
         }
+    finally:
+        if owns_conn and conn is not None:
+            await conn.close()
+
+
+async def get_dashboard_price_trend_chart(
+    source: Optional[str] = None,
+    brand: Optional[str] = None,
+    model: Optional[str] = None,
+    variant: Optional[str] = None,
+    year: Optional[int] = None,
+    days: int = 30,
+    conn=None,
+) -> PriceTrendResponse:
+    owns_conn = False
+    if conn is None:
+        conn = await get_local_db_connection()
+        owns_conn = True
+
+    try:
+        window_end = date.today()
+        window_start = window_end - timedelta(days=max(days, 1) - 1)
+
+        conditions, values, param_index = _build_combined_filters(
+            brand=brand,
+            model=model,
+            variant=variant,
+            year=year,
+            source=source,
+        )
+        conditions.append("c.information_ads_date IS NOT NULL")
+        conditions.append(f"c.information_ads_date BETWEEN ${param_index} AND ${param_index + 1}")
+        values.extend([window_start, window_end])
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        combined_cte = _build_price_vs_mileage_cte_for_source(source)
+
+        query = f"""
+            {combined_cte},
+            date_series AS (
+                SELECT generate_series(${param_index}::date, ${param_index + 1}::date, INTERVAL '1 day')::date AS trend_date
+            ),
+            daily AS (
+                SELECT
+                    c.information_ads_date AS trend_date,
+                    ROUND(AVG(c.price)::numeric, 2) AS avg_price,
+                    MIN(c.price)::int AS min_price,
+                    MAX(c.price)::int AS max_price,
+                    COUNT(*)::int AS listing_count
+                FROM combined c
+                WHERE {where_clause}
+                GROUP BY c.information_ads_date
+            )
+            SELECT
+                ds.trend_date,
+                d.avg_price,
+                d.min_price,
+                d.max_price,
+                COALESCE(d.listing_count, 0)::int AS listing_count
+            FROM date_series ds
+            LEFT JOIN daily d ON d.trend_date = ds.trend_date
+            ORDER BY ds.trend_date ASC
+        """
+
+        rows = await conn.fetch(query, *values)
+
+        data_points = [
+            PriceTrendPoint(
+                date=row["trend_date"],
+                avg_price=float(row["avg_price"]) if row["avg_price"] is not None else None,
+                min_price=row["min_price"],
+                max_price=row["max_price"],
+                listing_count=row["listing_count"] or 0,
+            )
+            for row in rows
+        ]
+
+        populated_points = [point for point in data_points if point.avg_price is not None]
+        start_point = populated_points[0] if populated_points else None
+        end_point = populated_points[-1] if populated_points else None
+
+        change_amount = None
+        change_percent = None
+        trend_direction = "flat"
+        lowest_avg_price = None
+        highest_avg_price = None
+
+        if populated_points:
+            avg_prices = [point.avg_price for point in populated_points if point.avg_price is not None]
+            if avg_prices:
+                lowest_avg_price = min(avg_prices)
+                highest_avg_price = max(avg_prices)
+
+        if start_point and end_point:
+            change_amount = round(end_point.avg_price - start_point.avg_price, 2)
+            if start_point.avg_price not in [None, 0]:
+                change_percent = round((change_amount / start_point.avg_price) * 100, 2)
+            if change_amount > 0:
+                trend_direction = "up"
+            elif change_amount < 0:
+                trend_direction = "down"
+
+        return PriceTrendResponse(
+            filters=PriceTrendFilters(
+                source=_normalize_source(source),
+                brand=brand.strip().upper() if brand else None,
+                model=model.strip().upper() if model else None,
+                variant=variant.strip().upper() if variant else None,
+                year=year,
+                days=days,
+                date_field="information_ads_date",
+            ),
+            summary=PriceTrendSummary(
+                start_date=start_point.date if start_point else None,
+                end_date=end_point.date if end_point else None,
+                start_avg_price=start_point.avg_price if start_point else None,
+                end_avg_price=end_point.avg_price if end_point else None,
+                change_amount=change_amount,
+                change_percent=change_percent,
+                trend_direction=trend_direction,
+                lowest_avg_price=lowest_avg_price,
+                highest_avg_price=highest_avg_price,
+            ),
+            meta=PriceTrendMeta(
+                granularity="day",
+                total_days=days,
+                days_with_data=len(populated_points),
+            ),
+            data=data_points,
+        )
     finally:
         if owns_conn and conn is not None:
             await conn.close()

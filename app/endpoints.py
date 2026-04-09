@@ -417,6 +417,7 @@ async def get_cars_for_django(
     model_filter: Optional[str] = Query(None),
     variant_filter: Optional[str] = Query(None),
     year_value: Optional[int] = Query(None),
+    recent_months: Optional[int] = Query(None, ge=1),
     x_django_key: str = Header(...)
 ):
     """Get car records for Django DataTables"""
@@ -435,7 +436,8 @@ async def get_cars_for_django(
             brand_filter=brand_filter,
             model_filter=model_filter,
             variant_filter=variant_filter,
-            year_value=year_value
+            year_value=year_value,
+            recent_months=recent_months,
         )
         return result
     except Exception as e:
@@ -486,12 +488,20 @@ async def get_price_estimation_for_django(
     variant: str,
     year: int,
     mileage: Optional[int] = None,
+    recent_months: Optional[int] = Query(None, ge=1),
     x_django_key: str = Header(...)
 ):
     """Get price estimation for car"""
     verify_django_key(x_django_key)
     try:
-        estimation = await get_price_estimation(brand, model, variant, year, mileage)
+        estimation = await get_price_estimation(
+            brand,
+            model,
+            variant,
+            year,
+            mileage,
+            recent_months=recent_months,
+        )
         return estimation
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

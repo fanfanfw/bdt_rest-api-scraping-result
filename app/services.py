@@ -1470,7 +1470,8 @@ async def get_car_records(
     brand_filter: Optional[str] = None,
     model_filter: Optional[str] = None,
     variant_filter: Optional[str] = None,
-    year_value: Optional[int] = None
+    year_value: Optional[int] = None,
+    recent_months: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Get car records for DataTables with pagination and filtering"""
     conn = await get_local_db_connection()
@@ -1513,6 +1514,14 @@ async def get_car_records(
         if year_value:
             conditions.append(f"c.year = ${param_index}")
             params.append(year_value)
+            param_index += 1
+
+        if recent_months is not None:
+            conditions.append(f"c.information_ads_date IS NOT NULL")
+            conditions.append(
+                f"c.information_ads_date >= (CURRENT_DATE - make_interval(months => ${param_index}))::date"
+            )
+            params.append(recent_months)
             param_index += 1
 
         if year_filter:
@@ -2127,7 +2136,8 @@ async def get_price_estimation(
     model: str, 
     variant: str, 
     year: int, 
-    mileage: Optional[int] = None
+    mileage: Optional[int] = None,
+    recent_months: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Get price estimation for car based on similar records"""
     conn = await get_local_db_connection()
@@ -2143,30 +2153,53 @@ async def get_price_estimation(
         if not standard_row:
             raise HTTPException(status_code=404, detail="Car variant not found")
         
+        query_params: List[Any] = [standard_row['id'], year]
+        recent_months_filter = ""
+        if recent_months is not None:
+            query_params.append(recent_months)
+            recent_months_filter = (
+                f"\n            AND c.information_ads_date IS NOT NULL"
+                f"\n            AND c.information_ads_date >= (CURRENT_DATE - make_interval(months => ${len(query_params)}))::date"
+            )
+
         # Get price data for exact year match from both sources
         price_query = f"""
-            SELECT price, mileage, year, '{TB_UNIFIED}' as source
-            FROM {TB_UNIFIED}
-            WHERE cars_standard_id = $1
-              AND price IS NOT NULL
-              AND price > 0
-              AND year = $2
-              AND status IN ('active', 'sold')
+            WITH combined AS (
+                SELECT
+                    price,
+                    mileage,
+                    year,
+                    information_ads_date,
+                    '{TB_UNIFIED}' as source
+                FROM {TB_UNIFIED}
+                WHERE cars_standard_id = $1
+                  AND price IS NOT NULL
+                  AND price > 0
+                  AND year = $2
+                  AND status IN ('active', 'sold')
 
-            UNION ALL
+                UNION ALL
 
-            SELECT price, mileage, year, '{TB_CARSOME}' as source
-            FROM {TB_CARSOME}
-            WHERE cars_standard_id = $1
-              AND price IS NOT NULL
-              AND price > 0
-              AND year = $2
-              AND status IN ('active', 'sold')
-
+                SELECT
+                    price,
+                    mileage,
+                    year,
+                    created_at::date AS information_ads_date,
+                    '{TB_CARSOME}' as source
+                FROM {TB_CARSOME}
+                WHERE cars_standard_id = $1
+                  AND price IS NOT NULL
+                  AND price > 0
+                  AND year = $2
+                  AND status IN ('active', 'sold')
+            )
+            SELECT price, mileage, year, source, information_ads_date
+            FROM combined c
+            WHERE 1=1{recent_months_filter}
             ORDER BY price ASC
         """
 
-        rows = await conn.fetch(price_query, standard_row['id'], year)
+        rows = await conn.fetch(price_query, *query_params)
         
         if not rows:
             raise HTTPException(status_code=404, detail="No price data available")

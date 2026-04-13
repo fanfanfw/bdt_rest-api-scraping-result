@@ -238,7 +238,7 @@ async def analytics_dashboard_detail_price(
     model: str = Query(..., example="YARIS"),
     variant: str = Query(..., example="E"),
     year: int = Query(..., example=2020),
-    your_price: int = Query(..., example=65500),
+    your_price: float = Query(..., example=65500.5),
     source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
 ):
     """Return detail price metrics for one vehicle."""

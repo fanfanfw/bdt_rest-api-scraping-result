@@ -77,7 +77,7 @@ class DashboardCompetitorResultRow(BaseModel):
     location: Optional[str] = None
     model: str
     listed_price: Optional[int] = None
-    vs_your_price: Optional[int] = None
+    vs_your_price: Optional[float] = None
     distance: Optional[int] = None
     last_updated: Optional[datetime] = None
 
@@ -92,7 +92,7 @@ class DashboardCompetitorResultMeta(BaseModel):
 class DashboardCompetitorResultSummary(BaseModel):
     competitor_count: int
     market_average: Optional[float] = None
-    your_price: Optional[int] = None
+    your_price: Optional[float] = None
     gap: Optional[float] = None
 
 
@@ -108,7 +108,7 @@ class DashboardCompetitorBulkItemInput(BaseModel):
     model: Optional[str] = Field(None, example="YARIS")
     variant: Optional[str] = Field(None, example="E")
     year: Optional[int] = Field(None, example=2020)
-    your_price: Optional[int] = Field(None, example=65500)
+    your_price: Optional[float] = Field(None, example=65500.5)
 
 
 class DashboardCompetitorBulkRequest(BaseModel):
@@ -143,7 +143,7 @@ class InventoryPriceMonitorItemInput(BaseModel):
     model: str = Field(..., example="YARIS")
     variant: str = Field(..., example="E")
     year: int = Field(..., example=2020)
-    your_price: Optional[int] = Field(None, example=65500)
+    your_price: Optional[float] = Field(None, example=65500.5)
 
 
 class InventoryPriceMonitorRequest(BaseModel):
@@ -166,7 +166,7 @@ class InventoryPriceMonitorResultItem(BaseModel):
     variant: str
     year: int
     vehicle: str
-    your_price: Optional[int] = None
+    your_price: Optional[float] = None
     market_average: Optional[float] = None
     gap: Optional[float] = None
     competitor_count: int
@@ -183,7 +183,7 @@ class DashboardDetailPriceResponse(BaseModel):
     model: str
     variant: str
     year: int
-    your_price: int
+    your_price: float
     data_points: int
     lowest_price: Optional[int] = None
     average_price: Optional[float] = None

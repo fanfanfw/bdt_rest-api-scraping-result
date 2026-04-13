@@ -145,7 +145,7 @@ async def _get_competitor_market_summary(
     conn,
     where_clause: str,
     values: List[Any],
-    your_price: Optional[int] = None,
+    your_price: Optional[float] = None,
 ) -> DashboardCompetitorResultSummary:
     summary_query = f"""
         SELECT
@@ -844,7 +844,7 @@ async def get_dashboard_detail_price(
     model: str,
     variant: str,
     year: int,
-    your_price: int,
+    your_price: float,
     source: Optional[str] = None,
     conn=None,
 ) -> DashboardDetailPriceResponse:
@@ -1209,7 +1209,7 @@ async def _get_dashboard_competitor_result(
     year: Optional[int] = None,
     source: Optional[str] = None,
     status: Optional[str] = None,
-    your_price: Optional[int] = None,
+    your_price: Optional[float] = None,
     months: int = 1,
     limit: int = 10,
     offset: int = 0,

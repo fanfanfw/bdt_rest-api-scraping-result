@@ -228,7 +228,9 @@ CREATE TABLE public.cars_standard (
     variant_norm character varying(255),
     model_raw character varying(255),
     variant_raw character varying(255),
-    variant_raw2 character varying(255)
+    variant_raw2 character varying(255),
+    variant_raw3 character varying(255),
+    variant_raw4 character varying(255)
 );
 
 
@@ -6922,4 +6924,3 @@ ALTER TABLE ONLY public.price_history_mudahmy
 --
 -- PostgreSQL database dump complete
 --
-

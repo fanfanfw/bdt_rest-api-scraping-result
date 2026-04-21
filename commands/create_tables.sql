@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS cars_standard (
     model_group_raw VARCHAR(100) NULL,
     model_raw VARCHAR(100) NULL,
     variant_raw VARCHAR(100) NULL,
-    variant_raw2 VARCHAR(100) NULL
+    variant_raw2 VARCHAR(100) NULL,
+    variant_raw3 VARCHAR(100) NULL,
+    variant_raw4 VARCHAR(100) NULL
 );
 
 -- Create indexes for cars_standard table

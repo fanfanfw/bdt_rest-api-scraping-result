@@ -45,7 +45,8 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
         # Step 1: Cari berdasarkan brand_norm (case insensitive)
         cur.execute("""
             SELECT id, brand_norm, model_group_norm, model_norm, variant_norm,
-                   model_group_raw, model_raw, model_raw2, variant_raw, variant_raw2
+                   model_group_raw, model_raw, model_raw2, variant_raw, variant_raw2,
+                   variant_raw3, variant_raw4
             FROM cars_standard
             WHERE UPPER(brand_norm) = UPPER(%s)
         """, (brand.strip(),))
@@ -81,13 +82,17 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
             if not model_match:
                 continue
 
-            # Step 4: Cek variant - prioritas variant_norm, lalu variant_raw, lalu variant_raw2
+            # Step 4: Cek variant - prioritas variant_norm, lalu variant_raw sampai variant_raw4
             variant_match = False
             if candidate['variant_norm'] and candidate['variant_norm'].strip().upper() == variant.strip().upper():
                 variant_match = True
             elif candidate['variant_raw'] and candidate['variant_raw'].strip().upper() == variant.strip().upper():
                 variant_match = True
             elif candidate['variant_raw2'] and candidate['variant_raw2'].strip().upper() == variant.strip().upper():
+                variant_match = True
+            elif candidate['variant_raw3'] and candidate['variant_raw3'].strip().upper() == variant.strip().upper():
+                variant_match = True
+            elif candidate['variant_raw4'] and candidate['variant_raw4'].strip().upper() == variant.strip().upper():
                 variant_match = True
 
             if variant_match:

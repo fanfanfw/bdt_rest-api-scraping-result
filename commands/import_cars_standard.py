@@ -134,8 +134,8 @@ class CarsStandardImporter:
                         insert_query = """
                             INSERT INTO cars_standard (
                                 id, brand_norm, model_group_norm, model_norm, variant_norm,
-                                model_group_raw, model_raw, variant_raw, variant_raw2
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                model_group_raw, model_raw, variant_raw, variant_raw2, variant_raw3, variant_raw4
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
                         
                         # Helper function to convert CSV NULL string to actual None
@@ -153,7 +153,9 @@ class CarsStandardImporter:
                             parse_csv_value(row.get('model_group_raw')),
                             parse_csv_value(row.get('model_raw')),
                             parse_csv_value(row.get('variant_raw')),
-                            parse_csv_value(row.get('variant_raw2'))
+                            parse_csv_value(row.get('variant_raw2')),
+                            parse_csv_value(row.get('variant_raw3')),
+                            parse_csv_value(row.get('variant_raw4'))
                         ))
                         imported_count += 1
                         
@@ -218,8 +220,8 @@ class CarsStandardImporter:
                         upsert_query = """
                             INSERT INTO cars_standard (
                                 id, brand_norm, model_group_norm, model_norm, variant_norm,
-                                model_group_raw, model_raw, variant_raw, variant_raw2
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                model_group_raw, model_raw, variant_raw, variant_raw2, variant_raw3, variant_raw4
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (id) 
                             DO UPDATE SET
                                 brand_norm = EXCLUDED.brand_norm,
@@ -229,7 +231,9 @@ class CarsStandardImporter:
                                 model_group_raw = EXCLUDED.model_group_raw,
                                 model_raw = EXCLUDED.model_raw,
                                 variant_raw = EXCLUDED.variant_raw,
-                                variant_raw2 = EXCLUDED.variant_raw2
+                                variant_raw2 = EXCLUDED.variant_raw2,
+                                variant_raw3 = EXCLUDED.variant_raw3,
+                                variant_raw4 = EXCLUDED.variant_raw4
                             RETURNING (xmax = 0) AS inserted
                         """
                         
@@ -242,7 +246,9 @@ class CarsStandardImporter:
                             parse_csv_value(row.get('model_group_raw')),
                             parse_csv_value(row.get('model_raw')),
                             parse_csv_value(row.get('variant_raw')),
-                            parse_csv_value(row.get('variant_raw2'))
+                            parse_csv_value(row.get('variant_raw2')),
+                            parse_csv_value(row.get('variant_raw3')),
+                            parse_csv_value(row.get('variant_raw4'))
                         ))
                         
                         result = cur.fetchone()

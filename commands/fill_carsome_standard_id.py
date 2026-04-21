@@ -54,7 +54,7 @@ def candidate_matches(candidate: Dict[str, Any], key: str, target: Optional[str]
     priority_columns = {
         "model_group": ["model_group_norm", "model_group_raw"],
         "model": ["model_norm", "model_raw", "model_raw2"],
-        "variant": ["variant_norm", "variant_raw", "variant_raw2"],
+        "variant": ["variant_norm", "variant_raw", "variant_raw2", "variant_raw3", "variant_raw4"],
     }
 
     for column in priority_columns.get(key, []):
@@ -89,7 +89,7 @@ def find_cars_standard_id(
             """
             SELECT id, brand_norm, model_group_norm, model_group_raw,
                    model_norm, model_raw, model_raw2,
-                   variant_norm, variant_raw, variant_raw2
+                   variant_norm, variant_raw, variant_raw2, variant_raw3, variant_raw4
             FROM cars_standard
             WHERE UPPER(brand_norm) = %s
             """,

@@ -300,7 +300,11 @@ async def map_cars_standard_id(conn):
         UPDATE carsome
         SET cars_standard_id = cs.id
         FROM cars_standard cs
-        WHERE UPPER(TRIM(carsome.brand)) = UPPER(TRIM(cs.brand_norm))
+        WHERE (
+                UPPER(TRIM(carsome.brand)) = UPPER(TRIM(cs.brand_norm))
+             OR UPPER(TRIM(carsome.brand)) = UPPER(TRIM(cs.brand_raw))
+             OR UPPER(TRIM(carsome.brand)) = UPPER(TRIM(cs.brand_raw2))
+        )
           AND UPPER(TRIM(carsome.model)) = UPPER(TRIM(cs.model_norm))
           AND UPPER(TRIM(carsome.variant)) = UPPER(TRIM(cs.variant_norm))
           AND carsome.cars_standard_id IS NULL

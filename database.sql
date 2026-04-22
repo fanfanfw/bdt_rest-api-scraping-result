@@ -224,6 +224,8 @@ ALTER SEQUENCE public.cars_mudahmy_id_seq OWNED BY public.cars_mudahmy.id;
 CREATE TABLE public.cars_standard (
     id integer NOT NULL,
     brand_norm character varying(255),
+    brand_raw character varying(255),
+    brand_raw2 character varying(255),
     model_norm character varying(255),
     variant_norm character varying(255),
     model_raw character varying(255),

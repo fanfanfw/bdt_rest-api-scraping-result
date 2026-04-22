@@ -30,6 +30,35 @@ from psycopg2.extras import RealDictCursor
 logger = logging.getLogger(__name__)
 
 
+def normalize_value(value):
+    """Konversi string ke uppercase tanpa spasi ekstra; kosong -> None."""
+    if value is None:
+        return None
+    cleaned = str(value).strip().upper()
+    if cleaned in {"", "-", "N/A", "NULL"}:
+        return None
+    return cleaned
+
+
+def candidate_matches(candidate, key, target):
+    """Bandingkan kandidat cars_standard berdasarkan prioritas kolom untuk tiap field."""
+    if target is None:
+        return False
+
+    priority_columns = {
+        "brand": ["brand_norm", "brand_raw", "brand_raw2"],
+        "model_group": ["model_group_norm", "model_group_raw"],
+        "model": ["model_norm", "model_raw", "model_raw2"],
+        "variant": ["variant_norm", "variant_raw", "variant_raw2", "variant_raw3", "variant_raw4"],
+    }
+
+    for column in priority_columns.get(key, []):
+        value = candidate.get(column)
+        if value and str(value).strip().upper() == target:
+            return True
+    return False
+
+
 def find_cars_standard_id(cur, brand, model_group, model, variant):
     """
     Mencari cars_standard_id berdasarkan brand, model_group, model, variant
@@ -38,66 +67,49 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
     """
     cars_standard_id = None
 
-    if not brand or not model or not variant:
+    brand_norm = normalize_value(brand)
+    model_group_norm = normalize_value(model_group)
+    model_norm = normalize_value(model)
+    variant_norm = normalize_value(variant)
+
+    if brand_norm is None or model_norm is None or variant_norm is None:
         return None
 
     try:
-        # Step 1: Cari berdasarkan brand_norm (case insensitive)
+        # Step 1: Cari kandidat berdasarkan brand dengan fallback norm/raw/raw2
         cur.execute("""
-            SELECT id, brand_norm, model_group_norm, model_norm, variant_norm,
+            SELECT id, brand_norm, brand_raw, brand_raw2,
+                   model_group_norm, model_norm, variant_norm,
                    model_group_raw, model_raw, model_raw2, variant_raw, variant_raw2,
                    variant_raw3, variant_raw4
             FROM cars_standard
-            WHERE UPPER(brand_norm) = UPPER(%s)
-        """, (brand.strip(),))
+            WHERE UPPER(TRIM(brand_norm)) = %s
+               OR UPPER(TRIM(brand_raw)) = %s
+               OR UPPER(TRIM(brand_raw2)) = %s
+        """, (brand_norm, brand_norm, brand_norm))
 
         brand_matches = cur.fetchall()
 
         # model_group opsional untuk cars_unified terbaru.
         # Jika None/"NO MODEL GROUP", jangan blokir matching.
-        model_group_norm = model_group.strip().upper() if model_group else None
         ignore_model_group = model_group_norm in {None, "NO MODEL GROUP"}
 
         for candidate in brand_matches:
-            # Step 2: Cek model_group hanya jika ada nilai valid
-            if not ignore_model_group:
-                model_group_match = False
-                if candidate['model_group_norm'] and candidate['model_group_norm'].strip().upper() == model_group_norm:
-                    model_group_match = True
-                elif candidate['model_group_raw'] and candidate['model_group_raw'].strip().upper() == model_group_norm:
-                    model_group_match = True
-
-                if not model_group_match:
-                    continue
-
-            # Step 3: Cek model - prioritas model_norm dulu, lalu model_raw
-            model_match = False
-            if candidate['model_norm'] and candidate['model_norm'].strip().upper() == model.strip().upper():
-                model_match = True
-            elif candidate['model_raw'] and candidate['model_raw'].strip().upper() == model.strip().upper():
-                model_match = True
-            elif candidate['model_raw2'] and candidate['model_raw2'].strip().upper() == model.strip().upper():
-                model_match = True
-
-            if not model_match:
+            if not candidate_matches(candidate, "brand", brand_norm):
                 continue
 
-            # Step 4: Cek variant - prioritas variant_norm, lalu variant_raw sampai variant_raw4
-            variant_match = False
-            if candidate['variant_norm'] and candidate['variant_norm'].strip().upper() == variant.strip().upper():
-                variant_match = True
-            elif candidate['variant_raw'] and candidate['variant_raw'].strip().upper() == variant.strip().upper():
-                variant_match = True
-            elif candidate['variant_raw2'] and candidate['variant_raw2'].strip().upper() == variant.strip().upper():
-                variant_match = True
-            elif candidate['variant_raw3'] and candidate['variant_raw3'].strip().upper() == variant.strip().upper():
-                variant_match = True
-            elif candidate['variant_raw4'] and candidate['variant_raw4'].strip().upper() == variant.strip().upper():
-                variant_match = True
+            # Step 2: Cek model_group hanya jika ada nilai valid
+            if not ignore_model_group and not candidate_matches(candidate, "model_group", model_group_norm):
+                continue
 
-            if variant_match:
-                cars_standard_id = candidate['id']
-                break  # Keluar dari loop jika sudah ditemukan match
+            if not candidate_matches(candidate, "model", model_norm):
+                continue
+
+            if not candidate_matches(candidate, "variant", variant_norm):
+                continue
+
+            cars_standard_id = candidate['id']
+            break  # Keluar dari loop jika sudah ditemukan match
 
     except Exception as e:
         logger.error(f"Error dalam pencarian cars_standard_id: {e}")
@@ -147,6 +159,20 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
         except Exception as e:
             logger.debug(f"Index mungkin sudah ada: {e}")
             conn.rollback()
+
+        for index_name, column_name in (
+            ("idx_cars_standard_brand_raw_upper", "brand_raw"),
+            ("idx_cars_standard_brand_raw2_upper", "brand_raw2"),
+        ):
+            try:
+                cur.execute(f"""
+                    CREATE INDEX CONCURRENTLY IF NOT EXISTS {index_name}
+                    ON cars_standard (UPPER({column_name}))
+                """)
+                conn.commit()
+            except Exception as e:
+                logger.debug(f"Index mungkin sudah ada: {e}")
+                conn.rollback()
 
         # Ambil semua record yang cars_standard_id nya NULL dengan LIMIT untuk processing batch
         cur.execute("""

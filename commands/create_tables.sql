@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS cars_standard (
     variant_norm VARCHAR(100) NOT NULL,
     
     -- Raw data fields (optional)
+    brand_raw VARCHAR(100) NULL,
+    brand_raw2 VARCHAR(100) NULL,
     model_group_raw VARCHAR(100) NULL,
     model_raw VARCHAR(100) NULL,
     variant_raw VARCHAR(100) NULL,

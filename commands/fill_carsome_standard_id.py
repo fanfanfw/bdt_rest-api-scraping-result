@@ -52,6 +52,7 @@ def candidate_matches(candidate: Dict[str, Any], key: str, target: Optional[str]
 
     # Mapping prioritas kolom berdasarkan key
     priority_columns = {
+        "brand": ["brand_norm", "brand_raw", "brand_raw2"],
         "model_group": ["model_group_norm", "model_group_raw"],
         "model": ["model_norm", "model_raw", "model_raw2"],
         "variant": ["variant_norm", "variant_raw", "variant_raw2", "variant_raw3", "variant_raw4"],
@@ -87,13 +88,16 @@ def find_cars_standard_id(
     try:
         cursor.execute(
             """
-            SELECT id, brand_norm, model_group_norm, model_group_raw,
+            SELECT id, brand_norm, brand_raw, brand_raw2,
+                   model_group_norm, model_group_raw,
                    model_norm, model_raw, model_raw2,
                    variant_norm, variant_raw, variant_raw2, variant_raw3, variant_raw4
             FROM cars_standard
-            WHERE UPPER(brand_norm) = %s
+            WHERE UPPER(TRIM(brand_norm)) = %s
+               OR UPPER(TRIM(brand_raw)) = %s
+               OR UPPER(TRIM(brand_raw2)) = %s
             """,
-            (brand_norm,),
+            (brand_norm, brand_norm, brand_norm),
         )
         candidates = cursor.fetchall()
     except Exception as exc:
@@ -105,6 +109,9 @@ def find_cars_standard_id(
 
     for candidate in candidates:
         # Brand sudah dipastikan cocok lewat query; cek model_group, model, variant
+        if not candidate_matches(candidate, "brand", brand_norm):
+            continue
+
         if not ignore_model_group and not candidate_matches(candidate, "model_group", model_group_norm):
             continue
 

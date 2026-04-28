@@ -1,4 +1,4 @@
-"nomor","brand_norm","brand_raw","brand_raw2","model_norm","model_raw","model_raw2","variant_norm","variant_raw","variant_raw2","variant_raw3","variant_raw4"
+"id","brand_norm","brand_raw","brand_raw2","model_norm","model_raw","model_raw2","variant_norm","variant_raw","variant_raw2","variant_raw3","variant_raw4"
 1,"ALFA ROMEO",NULL,NULL,"145",NULL,NULL,"NO VARIANT",NULL,NULL,NULL,NULL
 2,"ALFA ROMEO",NULL,NULL,"146",NULL,NULL,"NO VARIANT",NULL,NULL,NULL,NULL
 3,"ALFA ROMEO",NULL,NULL,"146",NULL,NULL,"TI TWIN SPARK","TI",NULL,NULL,NULL

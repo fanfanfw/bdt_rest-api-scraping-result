@@ -48,12 +48,19 @@ logger = logging.getLogger(__name__)
 
 # Import functions from fill scripts
 fill_all_cars_standard_id = None
+fill_normalize_predict_mudahmy_id = None
 
 try:
     from commands.fill_cars_standard_id import fill_all_cars_standard_id
     logger.info("✅ fill_cars_standard_id imported successfully")
 except ImportError:
     logger.warning("⚠️ fill_cars_standard_id not available (optional)")
+
+try:
+    from commands.fill_normalize_predict_mudahmy_id import fill_normalize_predict_mudahmy_id
+    logger.info("✅ fill_normalize_predict_mudahmy_id imported successfully")
+except ImportError:
+    logger.warning("⚠️ fill_normalize_predict_mudahmy_id not available (optional)")
 
 
 class DatabaseConfig:
@@ -700,11 +707,12 @@ class CarDataSyncService:
                 )
                 logger.info(f"✅ MudahMY price history: {price_mudahmy_inserted} inserted, {price_mudahmy_updated} updated, {price_mudahmy_not_found} skipped")
             
-            # STEP 6: Fill cars_standard_id only (skip category_id since it will be removed)
+            # STEP 6: Fill derived reference IDs
             cars_standard_updated = 0
+            normalize_predict_mudahmy_updated = 0
             
             if car_inserted > 0 or car_updated > 0:
-                logger.info("🔄 Running fill script for cars_standard_id only...")
+                logger.info("🔄 Running fill scripts for reference IDs...")
                 
                 # Fill cars_standard_id using existing script (run in thread to avoid async issues)
                 if fill_all_cars_standard_id:
@@ -720,10 +728,32 @@ class CarDataSyncService:
                         logger.error(f"❌ Error running fill_cars_standard_id: {e}")
                 else:
                     logger.error("❌ fill_all_cars_standard_id function not available")
+
+                # Fill MudahMY-specific normalize prediction ID.
+                if fill_normalize_predict_mudahmy_id:
+                    logger.info("📋 Running fill_normalize_predict_mudahmy_id script...")
+                    try:
+                        normalize_result = await asyncio.to_thread(fill_normalize_predict_mudahmy_id)
+                        if normalize_result and normalize_result.get('status') == 'success':
+                            normalize_predict_mudahmy_updated = normalize_result.get('updated', 0)
+                            logger.info(
+                                f"✅ Normalize predict MudahMY ID filled: "
+                                f"{normalize_predict_mudahmy_updated} records"
+                            )
+                        else:
+                            logger.warning(f"⚠️ Normalize predict MudahMY ID fill had issues: {normalize_result}")
+                    except Exception as e:
+                        logger.error(f"❌ Error running fill_normalize_predict_mudahmy_id: {e}")
+                else:
+                    logger.warning("⚠️ fill_normalize_predict_mudahmy_id function not available")
                 
-                logger.info(f"✅ Fill script completed: {cars_standard_updated} cars_standard_id updated")
+                logger.info(
+                    "✅ Fill scripts completed: "
+                    f"{cars_standard_updated} cars_standard_id updated, "
+                    f"{normalize_predict_mudahmy_updated} normalize_predict_mudahmy_id updated"
+                )
             else:
-                logger.info("⏭️ No car data changes, skipping fill script")
+                logger.info("⏭️ No car data changes, skipping fill scripts")
             
             # STEP 7: All done, prepare summary
             
@@ -739,6 +769,7 @@ class CarDataSyncService:
                 },
                 'fill_results': {
                     'cars_standard_updated': cars_standard_updated,
+                    'normalize_predict_mudahmy_updated': normalize_predict_mudahmy_updated,
                 },
                 'price_history': {
                     'carlistmy': {
@@ -781,9 +812,10 @@ def display_summary(summary: Dict[str, Any]):
     
     # Fill results
     fill = summary.get('fill_results', {})
-    if fill.get('cars_standard_updated', 0) > 0:
+    if fill.get('cars_standard_updated', 0) > 0 or fill.get('normalize_predict_mudahmy_updated', 0) > 0:
         print(f"\n🔄 FILL RESULTS:")
         print(f"   Cars Standard ID: {fill.get('cars_standard_updated', 0)} updated")
+        print(f"   Normalize Predict MudahMY ID: {fill.get('normalize_predict_mudahmy_updated', 0)} updated")
     
     # Price history
     ph = summary['price_history']

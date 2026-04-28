@@ -36,6 +36,8 @@ from pathlib import Path
 # Allows one-off overrides like `DB_NAME=... python commands/sync_cars.py ...`.
 _repo_root = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=_repo_root / ".env")
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
 
 # Configure logging
 logging.basicConfig(
@@ -45,17 +47,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import functions from fill scripts
-fill_all_category_id = None
 fill_all_cars_standard_id = None
 
 try:
-    from fill_cars_category_id import fill_all_category_id
-    logger.info("✅ fill_cars_category_id imported successfully")
-except ImportError:
-    logger.warning("⚠️ fill_cars_category_id not available (optional)")
-
-try:
-    from fill_cars_standard_id import fill_all_cars_standard_id
+    from commands.fill_cars_standard_id import fill_all_cars_standard_id
     logger.info("✅ fill_cars_standard_id imported successfully")
 except ImportError:
     logger.warning("⚠️ fill_cars_standard_id not available (optional)")

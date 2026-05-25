@@ -184,6 +184,7 @@ class DashboardDetailPriceResponse(BaseModel):
     variant: str
     year: int
     your_price: float
+    months: Optional[int] = None
     data_points: int
     lowest_price: Optional[int] = None
     average_price: Optional[float] = None

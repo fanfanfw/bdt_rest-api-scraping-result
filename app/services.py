@@ -846,6 +846,7 @@ async def get_dashboard_detail_price(
     year: int,
     your_price: float,
     source: Optional[str] = None,
+    months: Optional[int] = None,
     conn=None,
 ) -> DashboardDetailPriceResponse:
     owns_conn = False
@@ -866,6 +867,14 @@ async def get_dashboard_detail_price(
             year=year,
             source=normalized_source,
         )
+        if months is not None:
+            param_index = len(values) + 1
+            conditions.append("c.information_ads_date IS NOT NULL")
+            conditions.append(
+                f"c.information_ads_date >= (CURRENT_DATE - make_interval(months => ${param_index}))::date"
+            )
+            values.append(months)
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         combined_cte = _build_price_vs_mileage_cte_for_source(normalized_source)
 
@@ -890,6 +899,7 @@ async def get_dashboard_detail_price(
             variant=normalized_variant,
             year=year,
             your_price=your_price,
+            months=months,
             data_points=row["data_points"] or 0,
             lowest_price=row["lowest_price"],
             average_price=float(row["average_price"]) if row["average_price"] is not None else None,

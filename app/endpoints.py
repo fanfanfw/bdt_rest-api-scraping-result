@@ -240,7 +240,7 @@ async def analytics_dashboard_detail_price(
     year: int = Query(..., example=2020),
     your_price: float = Query(..., example=65500.5),
     source: Optional[str] = Query(None, description="Source filter, e.g. mudahmy, carlistmy, or carsome"),
-    months: Optional[int] = Query(None, ge=1, le=24, description="Optional number of recent months to include based on information_ads_date"),
+    months: Optional[int] = Query(None, ge=1, le=24, description="Optional number of recent months to include in the analysis"),
 ):
     """Return detail price metrics for one vehicle."""
     try:

@@ -69,6 +69,18 @@ BEGIN
         FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND table_name = 'cars_unified_ind'
+          AND column_name = 'price'
+          AND data_type <> 'bigint'
+    ) THEN
+        ALTER TABLE cars_unified_ind
+        ALTER COLUMN price TYPE BIGINT;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'cars_unified_ind'
           AND column_name = 'seat_capacity'
           AND (data_type <> 'character varying' OR character_maximum_length <> 50)
     ) THEN
@@ -166,6 +178,30 @@ COMMENT ON TABLE price_history_unified_ind IS 'Unified Indonesia price history f
 
 DO $$
 BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'price_history_unified_ind'
+          AND column_name = 'old_price'
+          AND data_type <> 'bigint'
+    ) THEN
+        ALTER TABLE price_history_unified_ind
+        ALTER COLUMN old_price TYPE BIGINT;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'price_history_unified_ind'
+          AND column_name = 'new_price'
+          AND data_type <> 'bigint'
+    ) THEN
+        ALTER TABLE price_history_unified_ind
+        ALTER COLUMN new_price TYPE BIGINT;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint

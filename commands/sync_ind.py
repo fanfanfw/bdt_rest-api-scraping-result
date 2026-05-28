@@ -181,6 +181,17 @@ def is_nullish(value: Any) -> bool:
     return False
 
 
+def is_empty_required_value(field: str, value: Any) -> bool:
+    """Validate required fields while rejecting impossible numeric values."""
+    if is_nullish(value):
+        return True
+    if field in {"price", "year"} and isinstance(value, (int, float)):
+        return value <= 0
+    if field == "mileage" and isinstance(value, (int, float)):
+        return value < 0
+    return False
+
+
 def clean_optional_text(text: Any) -> Optional[str]:
     """Trim display text while preserving original casing."""
     if is_nullish(text):
@@ -226,6 +237,13 @@ def normalize_text_array(value: Any) -> Optional[List[str]]:
 
     cleaned = clean_optional_text(value)
     return [cleaned] if cleaned else None
+
+
+def normalize_status(value: Any) -> str:
+    status = (clean_optional_text(value) or "active").lower()
+    if status == "ok":
+        return "active"
+    return status
 
 
 class IndonesiaCarDataSyncService:
@@ -421,7 +439,7 @@ class IndonesiaCarDataSyncService:
             "contact_seller": clean_optional_text(data.get("contact_seller")),
             "information_ads": clean_optional_text(data.get("information_ads")),
             "images": images,
-            "status": clean_optional_text(data.get("status")) or "active",
+            "status": normalize_status(data.get("status")),
             "created_at": data.get("created_at"),
             "last_scraped_at": data.get("last_scraped_at"),
             "version": data.get("version") or 1,
@@ -437,7 +455,7 @@ class IndonesiaCarDataSyncService:
         for data in normalized_data:
             missing_field = None
             for field in strict_required_fields:
-                if is_nullish(data.get(field)):
+                if is_empty_required_value(field, data.get(field)):
                     missing_field = field
                     break
             if missing_field:
@@ -689,7 +707,7 @@ class IndonesiaCarDataSyncService:
             },
             "fill_results": {
                 "cars_standard_updated": 0,
-                "normalize_predict_mudahmy_updated": 0,
+                "cars_standard_failed": 0,
             },
             "price_history": price_stats,
         }
@@ -732,7 +750,7 @@ def display_summary(summary: Dict[str, Any]):
     print("CAR DATA:")
     print(f"   Total fetched: {cars['total_fetched']}")
     print(f"   Total normalized: {cars['total_normalized']}")
-    for source in INDONESIA_SOURCES:
+    for source in cars.get("by_source", {}):
         stats = cars.get("by_source", {}).get(source, {"fetched": 0, "normalized": 0})
         fallbacks = cars.get("variant_fallbacks_by_source", {}).get(source, 0)
         print(
@@ -747,11 +765,11 @@ def display_summary(summary: Dict[str, Any]):
     fill = summary.get("fill_results", {})
     print("\nFILL RESULTS:")
     print(f"   Cars Standard ID: {fill.get('cars_standard_updated', 0)} updated")
-    print(f"   Normalize Predict MudahMY ID: {fill.get('normalize_predict_mudahmy_updated', 0)} updated")
+    print(f"   Cars Standard Failed: {fill.get('cars_standard_failed', 0)} failed")
 
     print("\nPRICE HISTORY:")
     price_history = summary.get("price_history", {})
-    for source in INDONESIA_SOURCES:
+    for source in price_history:
         stats = price_history.get(source, {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0})
         print(
             f"   - {source}: fetched={stats.get('fetched', 0)}, "

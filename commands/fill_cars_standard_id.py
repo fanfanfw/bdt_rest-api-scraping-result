@@ -11,6 +11,7 @@ Usage:
 
 import os
 import sys
+import argparse
 from datetime import datetime
 import logging
 from tqdm import tqdm
@@ -28,6 +29,16 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TABLE_NAME = "cars_unified"
+DEFAULT_SOURCES = ["carlistmy", "mudahmy"]
+
+
+def validate_table_name(table_name):
+    """Allow only simple SQL identifiers for dynamic table names."""
+    if not table_name or not str(table_name).replace("_", "").isalnum():
+        raise ValueError(f"Invalid table name: {table_name!r}")
+    return table_name
 
 
 def normalize_value(value):
@@ -59,6 +70,17 @@ def candidate_matches(candidate, key, target):
     return False
 
 
+def get_table_columns(cur, table_name):
+    """Return available columns for a public table."""
+    cur.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+    """, (table_name,))
+    return {row["column_name"] for row in cur.fetchall()}
+
+
 def find_cars_standard_id(cur, brand, model_group, model, variant):
     """
     Mencari cars_standard_id berdasarkan brand, model_group, model, variant
@@ -76,17 +98,46 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
         return None
 
     try:
+        standard_columns = get_table_columns(cur, "cars_standard")
+        candidate_columns = [
+            "id",
+            "brand_norm",
+            "brand_raw",
+            "brand_raw2",
+            "model_group_norm",
+            "model_norm",
+            "variant_norm",
+            "model_group_raw",
+            "model_raw",
+            "model_raw2",
+            "variant_raw",
+            "variant_raw2",
+            "variant_raw3",
+            "variant_raw4",
+        ]
+        select_columns = [
+            column if column in standard_columns else f"NULL AS {column}"
+            for column in candidate_columns
+        ]
+        brand_lookup_columns = [
+            column
+            for column in ("brand_norm", "brand_raw", "brand_raw2")
+            if column in standard_columns
+        ]
+        if not brand_lookup_columns:
+            logger.error("cars_standard has no brand lookup columns")
+            return None
+        brand_conditions = " OR ".join(
+            f"UPPER(TRIM({column})) = %s"
+            for column in brand_lookup_columns
+        )
+
         # Step 1: Cari kandidat berdasarkan brand dengan fallback norm/raw/raw2
-        cur.execute("""
-            SELECT id, brand_norm, brand_raw, brand_raw2,
-                   model_group_norm, model_norm, variant_norm,
-                   model_group_raw, model_raw, model_raw2, variant_raw, variant_raw2,
-                   variant_raw3, variant_raw4
+        cur.execute(f"""
+            SELECT {', '.join(select_columns)}
             FROM cars_standard
-            WHERE UPPER(TRIM(brand_norm)) = %s
-               OR UPPER(TRIM(brand_raw)) = %s
-               OR UPPER(TRIM(brand_raw2)) = %s
-        """, (brand_norm, brand_norm, brand_norm))
+            WHERE {brand_conditions}
+        """, tuple(brand_norm for _ in brand_lookup_columns))
 
         brand_matches = cur.fetchall()
 
@@ -118,7 +169,7 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
     return cars_standard_id
 
 
-def fill_cars_standard_id_for_source(source, batch_size=500):
+def fill_cars_standard_id_for_source(source, batch_size=500, table_name=DEFAULT_TABLE_NAME):
     """
     Mengisi cars_standard_id yang NULL untuk source tertentu
     dengan batch commit untuk menyimpan progress secara berkala
@@ -128,6 +179,8 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
     failed_count = 0
     failed_records = []
     batch_count = 0
+
+    table_name = validate_table_name(table_name)
 
     # Database configuration
     db_config = {
@@ -140,7 +193,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
 
     conn = None
     try:
-        logger.info(f"🔍 Mencari record dengan cars_standard_id NULL untuk source {source}...")
+        logger.info(f"🔍 Mencari record dengan cars_standard_id NULL untuk source {source} di {table_name}...")
 
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -175,9 +228,9 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
                 conn.rollback()
 
         # Ambil semua record yang cars_standard_id nya NULL dengan LIMIT untuk processing batch
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, listing_url, brand, model, variant
-            FROM cars_unified
+            FROM {table_name}
             WHERE source = %s
             AND cars_standard_id IS NULL
             AND brand IS NOT NULL
@@ -196,8 +249,8 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
             return updated_count, failed_count, failed_records
 
         # Prepare update statement untuk optimasi
-        update_stmt = """
-            UPDATE cars_unified
+        update_stmt = f"""
+            UPDATE {table_name}
             SET cars_standard_id = %s
             WHERE id = %s
         """
@@ -272,14 +325,20 @@ def fill_cars_standard_id_for_source(source, batch_size=500):
             conn.close()
 
 
-def fill_all_cars_standard_id():
+def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch_size=500):
     """
-    Mengisi cars_standard_id untuk semua source (carlistmy dan mudahmy)
+    Mengisi cars_standard_id untuk semua source yang diberikan.
+    Default tetap source Malaysia pada tabel cars_unified.
     """
+    table_name = validate_table_name(table_name)
+    sources = list(sources or DEFAULT_SOURCES)
+
     print("📋 Fill Cars Standard ID")
     print("-" * 50)
     print(f"🗄️ Database: {os.getenv('DB_NAME', 'db_test')}")
     print(f"🔧 Host: {os.getenv('DB_HOST', '127.0.0.1')}:{os.getenv('DB_PORT', 5432)}")
+    print(f"📦 Table: {table_name}")
+    print(f"📌 Sources: {', '.join(sources)}")
     print("")
     
     logger.info("🚀 Memulai proses pengisian cars_standard_id untuk record yang NULL...")
@@ -317,21 +376,19 @@ def fill_all_cars_standard_id():
         
         logger.info(f"📖 Found {cars_standard_count} cars_standard records")
         
-        # Process CarlistMY
-        logger.info("=" * 60)
-        logger.info("📋 Memproses source CarlistMY...")
-        updated_carlistmy, failed_carlistmy, failed_records_carlistmy = fill_cars_standard_id_for_source('carlistmy', batch_size=500)
-        total_updated += updated_carlistmy
-        total_failed += failed_carlistmy
-        all_failed_records.extend(failed_records_carlistmy)
-
-        # Process MudahMY
-        logger.info("=" * 60)
-        logger.info("📋 Memproses source MudahMY...")
-        updated_mudahmy, failed_mudahmy, failed_records_mudahmy = fill_cars_standard_id_for_source('mudahmy', batch_size=500)
-        total_updated += updated_mudahmy
-        total_failed += failed_mudahmy
-        all_failed_records.extend(failed_records_mudahmy)
+        source_results = {}
+        for source in sources:
+            logger.info("=" * 60)
+            logger.info(f"📋 Memproses source {source}...")
+            updated, failed, failed_records = fill_cars_standard_id_for_source(
+                source,
+                batch_size=batch_size,
+                table_name=table_name,
+            )
+            total_updated += updated
+            total_failed += failed
+            all_failed_records.extend(failed_records)
+            source_results[source] = {'updated': updated, 'failed': failed}
         
         # Summary report
         end_time = datetime.now()
@@ -345,8 +402,8 @@ def fill_all_cars_standard_id():
         logger.info(f"❌ Total record gagal match: {total_failed}")
         logger.info("")
         logger.info("📋 Detail per source:")
-        logger.info(f"   CarlistMY - Updated: {updated_carlistmy}, Failed: {failed_carlistmy}")
-        logger.info(f"   MudahMY   - Updated: {updated_mudahmy}, Failed: {failed_mudahmy}")
+        for source, stats in source_results.items():
+            logger.info(f"   {source} - Updated: {stats['updated']}, Failed: {stats['failed']}")
         
         # Simpan record yang gagal ke CSV untuk analisis
         failed_filename = None
@@ -354,7 +411,7 @@ def fill_all_cars_standard_id():
             try:
                 import pandas as pd
                 failed_df = pd.DataFrame(all_failed_records)
-                failed_filename = f"failed_cars_standard_id_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                failed_filename = f"failed_cars_standard_id_{table_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 failed_df.to_csv(failed_filename, index=False)
                 logger.info(f"💾 Record yang gagal match disimpan di: {failed_filename}")
             except ImportError:
@@ -372,8 +429,8 @@ def fill_all_cars_standard_id():
             'total_updated': total_updated,
             'total_failed': total_failed,
             'duration': str(duration),
-            'carlistmy': {'updated': updated_carlistmy, 'failed': failed_carlistmy},
-            'mudahmy': {'updated': updated_mudahmy, 'failed': failed_mudahmy},
+            'table_name': table_name,
+            'sources': source_results,
             'failed_records_file': failed_filename if all_failed_records else None
         }
         
@@ -394,8 +451,23 @@ if __name__ == "__main__":
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
+    parser = argparse.ArgumentParser(description="Fill cars_standard_id for unified car tables")
+    parser.add_argument("--table", default=DEFAULT_TABLE_NAME, help="Target table name, default: cars_unified")
+    parser.add_argument(
+        "--sources",
+        default=",".join(DEFAULT_SOURCES),
+        help="Comma-separated sources, default: carlistmy,mudahmy",
+    )
+    parser.add_argument("--batch-size", type=int, default=500, help="Commit batch size")
+    args = parser.parse_args()
+
     try:
-        result = fill_all_cars_standard_id()
+        selected_sources = [source.strip() for source in args.sources.split(",") if source.strip()]
+        result = fill_all_cars_standard_id(
+            sources=selected_sources,
+            table_name=args.table,
+            batch_size=args.batch_size,
+        )
         print("\n" + "=" * 60)
         print("HASIL AKHIR:")
         print("=" * 60)

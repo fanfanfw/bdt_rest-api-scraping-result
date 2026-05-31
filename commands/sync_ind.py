@@ -63,6 +63,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+fill_all_cars_standard_id = None
+try:
+    from commands.fill_cars_standard_id import fill_all_cars_standard_id
+except ImportError:
+    pass
+
 TARGET_TABLE = "cars_unified_ind"
 TARGET_PRICE_HISTORY_TABLE = "price_history_unified_ind"
 
@@ -675,6 +681,35 @@ class IndonesiaCarDataSyncService:
 
         car_inserted, car_updated, car_skipped = self.sync_to_target_database(all_normalized_data)
 
+        cars_standard_updated = 0
+        cars_standard_failed = 0
+        if car_inserted > 0 or car_updated > 0:
+            if fill_all_cars_standard_id:
+                logger.info("Running cars_standard_id fill for %s", TARGET_TABLE)
+                try:
+                    standard_result = await asyncio.to_thread(
+                        fill_all_cars_standard_id,
+                        sources=self.source_names,
+                        table_name=TARGET_TABLE,
+                        batch_size=500,
+                    )
+                    if standard_result and standard_result.get("status") == "success":
+                        cars_standard_updated = standard_result.get("total_updated", 0)
+                        cars_standard_failed = standard_result.get("total_failed", 0)
+                        logger.info(
+                            "cars_standard_id fill complete: %s updated, %s failed",
+                            cars_standard_updated,
+                            cars_standard_failed,
+                        )
+                    else:
+                        logger.warning("cars_standard_id fill returned issues: %s", standard_result)
+                except Exception as exc:
+                    logger.error("Error running cars_standard_id fill for Indonesia: %s", exc)
+            else:
+                logger.warning("Skipping cars_standard_id fill; fill_all_cars_standard_id is unavailable")
+        else:
+            logger.info("No car data changes; skipping cars_standard_id fill")
+
         price_batches = await asyncio.gather(
             *[
                 self.fetch_price_history_data(
@@ -706,8 +741,8 @@ class IndonesiaCarDataSyncService:
                 "variant_fallbacks_by_source": self.variant_fallback_by_source,
             },
             "fill_results": {
-                "cars_standard_updated": 0,
-                "cars_standard_failed": 0,
+                "cars_standard_updated": cars_standard_updated,
+                "cars_standard_failed": cars_standard_failed,
             },
             "price_history": price_stats,
         }

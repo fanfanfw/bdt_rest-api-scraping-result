@@ -1,6 +1,7 @@
 """Telegram Daily Scrape Summary (Unified DB)
 
-Reads the same unified table used by the dashboard (default: TB_UNIFIED=cars_unified)
+Reads the same unified table used by the dashboard (default: TB_UNIFIED=cars_unified),
+plus the Indonesia unified table (default: TB_UNIFIED_IND=cars_unified_ind) when present,
 and sends a daily summary message to Telegram.
 
 Usage:
@@ -15,11 +16,12 @@ Usage:
 Required env (.env):
   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
   TB_UNIFIED (optional, default: cars_unified)
+  TB_UNIFIED_IND (optional, default: cars_unified_ind)
   TELEGRAM_BOT_TOKEN
   TELEGRAM_CHAT_ID (optional if using --broadcast; supports comma/space-separated list)
 
 Optional env:
-  TELEGRAM_REPORT_SOURCES=mudahmy,carlistmy
+  TELEGRAM_REPORT_SOURCES=mudahmy,carlistmy,mobil123,carmudi,olx,carsomeid
   TB_CARSOME (optional, default: carsome)
   TELEGRAM_SUBSCRIBERS_TABLE (optional, default: public.telegram_subscribers)
   TELEGRAM_STATE_TABLE (optional, default: public.telegram_bot_state)
@@ -491,11 +493,15 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
     # Match dashboard "Today" KPI: only active/sold listings
     dashboard_statuses = ["active", "sold"]
 
+    unified_ind_table = validate_table_name(os.getenv("TB_UNIFIED_IND", "cars_unified_ind"))
+    include_unified_ind = table_exists(conn, unified_ind_table)
     carsome_table = validate_table_name(os.getenv("TB_CARSOME", "carsome"))
     include_carsome = table_exists(conn, carsome_table)
 
-    # All-time dataset: cars_unified + carsome (if exists)
+    # All-time dataset: cars_unified + cars_unified_ind (if exists) + carsome (if exists)
     all_union_tables = [table]
+    if include_unified_ind:
+        all_union_tables.append(unified_ind_table)
     # "All" totals should match dashboard definition too:
     # status in (active/sold) and cars_standard_id is not null.
     all_union_sql = _build_union_source_sql(
@@ -512,11 +518,19 @@ def fetch_metrics(conn, table: str, report_date: date, sources: list[str]) -> tu
         )
         all_union_sql = f"{all_union_sql} UNION ALL {carsome_all_sql}"
 
-    # Today's dataset (to match dashboard): cars_unified + carsome + status filter + require cars_standard_id
+    # Today's dataset (to match dashboard): cars_unified + cars_unified_ind + carsome + status filter + require cars_standard_id
     today_union_sql = (
         f"SELECT LOWER(source) AS source, listing_url, information_ads_date, cars_standard_id, status "
         f"FROM {table}"
     )
+    if include_unified_ind:
+        today_union_sql = (
+            f"{today_union_sql} UNION ALL "
+            f"SELECT LOWER(source) AS source, listing_url, "
+            f"COALESCE(information_ads_date, last_scraped_at::date) AS information_ads_date, "
+            f"cars_standard_id, status "
+            f"FROM {unified_ind_table}"
+        )
     if include_carsome:
         carsome_today_sql = build_carsome_select(
             conn,
@@ -821,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
     report_date = parse_date(args.date_str) if args.date_str else date.today()
 
     table = os.getenv("TB_UNIFIED", "cars_unified")
-    sources_env = os.getenv("TELEGRAM_REPORT_SOURCES", "mudahmy,carlistmy")
+    sources_env = os.getenv("TELEGRAM_REPORT_SOURCES", "mudahmy,carlistmy,mobil123,carmudi,olx,carsomeid")
     sources = [s.strip() for s in sources_env.split(",") if s.strip()]
 
     db_config = get_db_config()

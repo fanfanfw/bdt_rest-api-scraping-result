@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Remote database variables removed - no longer needed
 TB_UNIFIED = os.getenv("TB_UNIFIED", "cars_unified")
+TB_UNIFIED_IND = os.getenv("TB_UNIFIED_IND", "cars_unified_ind")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
@@ -2092,7 +2093,7 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
     Return daily metrics used by the Telegram report (per-source + totals).
 
     Definition matches the old CLI script:
-    - dataset: {TB_UNIFIED} plus {TB_CARSOME} when present
+    - dataset: {TB_UNIFIED} plus {TB_UNIFIED_IND} and {TB_CARSOME} when present
     - filter: LOWER(status) in ('active','sold') AND cars_standard_id IS NOT NULL
     - today_count/total_today: last_scraped_at occurs on report_date
     - unique_today: created_at AND last_scraped_at occur on report_date (new rows only)
@@ -2100,7 +2101,7 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
     """
     conn = await get_local_db_connection()
     try:
-        sources_env = os.getenv("TELEGRAM_REPORT_SOURCES", "mudahmy,carlistmy")
+        sources_env = os.getenv("TELEGRAM_REPORT_SOURCES", "mudahmy,carlistmy,mobil123,carmudi,olx,carsomeid")
         sources_norm = [s.strip().lower() for s in (sources or []) if s and s.strip()]
         if not sources_norm:
             sources_norm = [s.strip().lower() for s in sources_env.split(",") if s.strip()]
@@ -2110,7 +2111,9 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
         dashboard_statuses = ["active", "sold"]
 
         unified_table = _validate_table_name(TB_UNIFIED)
+        unified_ind_table = _validate_table_name(TB_UNIFIED_IND)
         carsome_table = _validate_table_name(TB_CARSOME)
+        include_unified_ind = await _table_exists(conn, unified_ind_table)
         include_carsome = await _table_exists(conn, carsome_table)
 
         unified_created_expr = "created_at"
@@ -2126,6 +2129,20 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                 unified_created_expr,
             )
             unified_last_scraped_expr = unified_created_expr
+
+        unified_ind_created_expr = "created_at"
+        unified_ind_last_scraped_expr = "last_scraped_at"
+        if include_unified_ind:
+            if not await _column_exists(conn, unified_ind_table, "created_at"):
+                logger.warning("Telegram daily-metrics: %s has no created_at; falling back to last_scraped_at", unified_ind_table)
+                unified_ind_created_expr = "last_scraped_at"
+            if not await _column_exists(conn, unified_ind_table, "last_scraped_at"):
+                logger.warning(
+                    "Telegram daily-metrics: %s has no last_scraped_at; falling back to %s",
+                    unified_ind_table,
+                    unified_ind_created_expr,
+                )
+                unified_ind_last_scraped_expr = unified_ind_created_expr
 
         carsome_created_expr = "created_at"
         carsome_last_scraped_expr = "last_updated_at"
@@ -2156,6 +2173,16 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                 status
             FROM {unified_table}
         """
+        unified_ind_select = f"""
+            SELECT
+                LOWER(source) AS source,
+                listing_url,
+                {unified_ind_created_expr} AS created_at,
+                {unified_ind_last_scraped_expr} AS last_scraped_at,
+                cars_standard_id,
+                status
+            FROM {unified_ind_table}
+        """
         carsome_select = f"""
             SELECT
                 LOWER(COALESCE(source, 'carsome')) AS source,
@@ -2169,6 +2196,9 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
 
         today_union_sql = unified_select
         all_union_sql = unified_select
+        if include_unified_ind:
+            today_union_sql = f"{today_union_sql}\nUNION ALL\n{unified_ind_select}"
+            all_union_sql = f"{all_union_sql}\nUNION ALL\n{unified_ind_select}"
         if include_carsome:
             today_union_sql = f"{today_union_sql}\nUNION ALL\n{carsome_select}"
             all_union_sql = f"{all_union_sql}\nUNION ALL\n{carsome_select}"

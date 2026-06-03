@@ -2094,10 +2094,13 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
 
     Definition matches the old CLI script:
     - dataset: {TB_UNIFIED} plus {TB_UNIFIED_IND} and {TB_CARSOME} when present
-    - filter: LOWER(status) in ('active','sold') AND cars_standard_id IS NOT NULL
+    - filter: LOWER(status) in ('active','sold') AND cars_standard_id IS NOT NULL (configurable per source)
     - today_count/total_today: last_scraped_at occurs on report_date
     - unique_today: created_at AND last_scraped_at occur on report_date (new rows only)
     - uniques: DISTINCT listing_url (carsome synthesizes listing_url)
+    
+    Environment variable TELEGRAM_ALLOW_NULL_STANDARD_ID_SOURCES controls which sources
+    allow NULL cars_standard_id (comma-separated). If empty, all sources require NOT NULL.
     """
     conn = await get_local_db_connection()
     try:
@@ -2107,6 +2110,10 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
             sources_norm = [s.strip().lower() for s in sources_env.split(",") if s.strip()]
         if not sources_norm:
             raise HTTPException(status_code=400, detail="No sources provided")
+
+        # Parse sources that allow NULL cars_standard_id
+        allow_null_env = os.getenv("TELEGRAM_ALLOW_NULL_STANDARD_ID_SOURCES", "")
+        allow_null_sources = {s.strip().lower() for s in allow_null_env.split(",") if s.strip()}
 
         dashboard_statuses = ["active", "sold"]
 
@@ -2203,6 +2210,24 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
             today_union_sql = f"{today_union_sql}\nUNION ALL\n{carsome_select}"
             all_union_sql = f"{all_union_sql}\nUNION ALL\n{carsome_select}"
 
+        # Build filter condition for cars_standard_id based on source
+        def build_standard_id_filter(source_alias: str) -> str:
+            """
+            Build cars_standard_id filter that allows NULL for configured sources.
+            Returns SQL condition like:
+            (cars_standard_id IS NOT NULL OR source IN ('olx', 'mobil123'))
+            """
+            if not allow_null_sources:
+                return f"{source_alias}.cars_standard_id IS NOT NULL"
+            
+            allow_list = ", ".join(f"'{s}'" for s in allow_null_sources)
+            return f"({source_alias}.cars_standard_id IS NOT NULL OR {source_alias}.source IN ({allow_list}))"
+
+        standard_id_filter_td = build_standard_id_filter("td")
+        standard_id_filter_ad = build_standard_id_filter("ad")
+        standard_id_filter_today_data = build_standard_id_filter("today_data")
+        standard_id_filter_all_data = build_standard_id_filter("all_data")
+
         per_source_sql = f"""
             WITH
               today_data AS ({today_union_sql}),
@@ -2218,7 +2243,7 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                   WHERE last_scraped_at >= $1::date
                     AND last_scraped_at < ($1::date + INTERVAL '1 day')
                     AND LOWER(status) = ANY($2::text[])
-                    AND cars_standard_id IS NOT NULL
+                    AND {standard_id_filter_today_data}
                 ) AS today_count
               FROM today_data
               WHERE source = ANY($3::text[])
@@ -2229,7 +2254,7 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                 source,
                 COUNT(*) FILTER (
                   WHERE LOWER(status) = ANY($2::text[])
-                    AND cars_standard_id IS NOT NULL
+                    AND {standard_id_filter_all_data}
                 ) AS all_time_count
               FROM all_data
               WHERE source = ANY($3::text[])
@@ -2250,7 +2275,7 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                  AND td.last_scraped_at >= $1::date
                  AND td.last_scraped_at < ($1::date + INTERVAL '1 day')
                  AND LOWER(td.status) = ANY($2::text[])
-                 AND td.cars_standard_id IS NOT NULL) AS total_today,
+                 AND {standard_id_filter_td}) AS total_today,
               (SELECT COUNT(DISTINCT td.listing_url)
                FROM today_data td
                WHERE td.source = ANY($3::text[])
@@ -2259,17 +2284,17 @@ async def get_telegram_daily_metrics(*, report_date: date, sources: Optional[Lis
                  AND td.last_scraped_at >= $1::date
                  AND td.last_scraped_at < ($1::date + INTERVAL '1 day')
                  AND LOWER(td.status) = ANY($2::text[])
-                 AND td.cars_standard_id IS NOT NULL) AS unique_today,
+                 AND {standard_id_filter_td}) AS unique_today,
               (SELECT COUNT(*)
                FROM all_data ad
                WHERE ad.source = ANY($3::text[])
                  AND LOWER(ad.status) = ANY($2::text[])
-                 AND ad.cars_standard_id IS NOT NULL) AS total_all,
+                 AND {standard_id_filter_ad}) AS total_all,
               (SELECT COUNT(DISTINCT ad.listing_url)
                FROM all_data ad
                WHERE ad.source = ANY($3::text[])
                  AND LOWER(ad.status) = ANY($2::text[])
-                 AND ad.cars_standard_id IS NOT NULL) AS unique_all
+                 AND {standard_id_filter_ad}) AS unique_all
         """
 
         rows = await conn.fetch(per_source_sql, report_date, dashboard_statuses, sources_norm)

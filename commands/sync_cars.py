@@ -20,7 +20,7 @@ Usage:
 import asyncio
 import asyncpg
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 import logging
 import csv
 import sys
@@ -50,17 +50,25 @@ logger = logging.getLogger(__name__)
 fill_all_cars_standard_id = None
 fill_normalize_predict_mudahmy_id = None
 
+_env_snapshot = dict(os.environ)
 try:
     from commands.fill_cars_standard_id import fill_all_cars_standard_id
     logger.info("✅ fill_cars_standard_id imported successfully")
 except ImportError:
     logger.warning("⚠️ fill_cars_standard_id not available (optional)")
+finally:
+    os.environ.clear()
+    os.environ.update(_env_snapshot)
 
+_env_snapshot = dict(os.environ)
 try:
     from commands.fill_normalize_predict_mudahmy_id import fill_normalize_predict_mudahmy_id
     logger.info("✅ fill_normalize_predict_mudahmy_id imported successfully")
 except ImportError:
     logger.warning("⚠️ fill_normalize_predict_mudahmy_id not available (optional)")
+finally:
+    os.environ.clear()
+    os.environ.update(_env_snapshot)
 
 
 class DatabaseConfig:
@@ -275,6 +283,64 @@ class CarDataSyncService:
         finally:
             if conn:
                 await conn.close()
+
+    async def fetch_mudahmy_details_data(
+        self,
+        days_back: Optional[int] = None,
+        hours_back: Optional[int] = None,
+        since: Optional[datetime] = None,
+        fetch_all: bool = False,
+    ) -> List[Dict[str, Any]]:
+        conn = None
+        try:
+            conn = await asyncpg.connect(**self.config.SOURCE_DB)
+            base_query = """
+                SELECT d.*
+                FROM public.cars_scrap_mudahmy_details d
+                INNER JOIN public.cars_scrap_mudahmy m ON m.listing_id = d.listing_id
+            """
+
+            query_args: List[Any] = []
+            if fetch_all:
+                query = f"{base_query} ORDER BY m.last_scraped_at DESC"
+            elif since:
+                query = f"""
+                    {base_query}
+                    WHERE m.last_scraped_at >= $1
+                    ORDER BY m.last_scraped_at DESC
+                """
+                query_args = [since]
+            elif hours_back:
+                query = f"""
+                    {base_query}
+                    WHERE m.last_scraped_at >= (NOW() - ($1 * INTERVAL '1 hour'))
+                    ORDER BY m.last_scraped_at DESC
+                """
+                query_args = [hours_back]
+            elif days_back:
+                query = f"""
+                    {base_query}
+                    WHERE m.last_scraped_at >= (NOW() - ($1 * INTERVAL '1 day'))
+                    ORDER BY m.last_scraped_at DESC
+                """
+                query_args = [days_back]
+            else:
+                query = f"""
+                    {base_query}
+                    WHERE m.last_scraped_at >= date_trunc('day', NOW())
+                    ORDER BY m.last_scraped_at DESC
+                """
+
+            logger.info("🔍 Fetching MudahMY details data...")
+            result = await conn.fetch(query, *query_args)
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"❌ Error fetching MudahMY details data: {e}")
+            return []
+        finally:
+            if conn:
+                await conn.close()
     
     def normalize_car_data(self, data: Dict[str, Any], source: str) -> Dict[str, Any]:
         """Normalize car data from different sources with improved field cleaning"""
@@ -471,6 +537,109 @@ class CarDataSyncService:
 
         return inserted, updated, invalid_count
     
+    def normalize_details_specs(self, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return None
+        return value
+
+    def sync_mudahmy_details_direct(self, details_data: List[Dict[str, Any]]) -> Tuple[int, int, int]:
+        if not details_data:
+            return 0, 0, 0
+
+        inserted = 0
+        updated = 0
+        skipped = 0
+        valid_data = []
+
+        for data in details_data:
+            if not data.get("listing_id") or not data.get("listing_url"):
+                skipped += 1
+                continue
+            valid_data.append(data)
+
+        if not valid_data:
+            logger.warning("❌ No valid MudahMY details records to process")
+            return 0, 0, skipped
+
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.config.TARGET_DB)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cars_unified_details (
+                    id BIGSERIAL PRIMARY KEY,
+                    source VARCHAR(20) NOT NULL,
+                    listing_id TEXT NOT NULL,
+                    listing_url TEXT NOT NULL,
+                    ad_highlights TEXT,
+                    description TEXT,
+                    car_specifications JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT unique_cars_unified_details_source_listing_id UNIQUE (source, listing_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cars_unified_details_source_listing_url
+                ON cars_unified_details (source, listing_url)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cars_unified_details_specs_gin
+                ON cars_unified_details USING GIN (car_specifications)
+            """)
+
+            upsert_query = """
+                INSERT INTO cars_unified_details (
+                    source, listing_id, listing_url, ad_highlights, description, car_specifications, updated_at
+                ) VALUES %s
+                ON CONFLICT (source, listing_id)
+                DO UPDATE SET
+                    listing_url = EXCLUDED.listing_url,
+                    ad_highlights = COALESCE(EXCLUDED.ad_highlights, cars_unified_details.ad_highlights),
+                    description = COALESCE(EXCLUDED.description, cars_unified_details.description),
+                    car_specifications = COALESCE(EXCLUDED.car_specifications, cars_unified_details.car_specifications),
+                    updated_at = NOW()
+                RETURNING (xmax = 0) AS inserted
+            """
+            values = []
+            for data in valid_data:
+                car_specifications = self.normalize_details_specs(data.get("car_specifications"))
+                values.append(
+                    (
+                        "mudahmy",
+                        str(data.get("listing_id")),
+                        data.get("listing_url"),
+                        data.get("ad_highlights"),
+                        data.get("description"),
+                        Json(car_specifications) if car_specifications else None,
+                        datetime.now(),
+                    )
+                )
+
+            from psycopg2.extras import execute_values
+            result = execute_values(cur, upsert_query, values, page_size=1000, fetch=True)
+            inserted = sum(1 for row in result if row["inserted"])
+            updated = len(result) - inserted
+            conn.commit()
+            logger.info(f"✅ MudahMY details UPSERT: {inserted} inserted, {updated} updated")
+
+        except Exception as e:
+            logger.error(f"❌ MudahMY details sync error: {e}")
+            if conn:
+                conn.rollback()
+            return 0, 0, skipped
+        finally:
+            if conn:
+                conn.close()
+
+        return inserted, updated, skipped
+
     def sync_price_history_direct(
         self,
         price_data: List[Dict[str, Any]],
@@ -663,6 +832,23 @@ class CarDataSyncService:
             logger.info(f"💾 Syncing {len(all_normalized_data)} car records to target database...")
             car_inserted, car_updated, car_skipped = self.sync_to_target_database(all_normalized_data)
             logger.info(f"✅ Car data UPSERT completed: {car_inserted} inserted, {car_updated} updated, {car_skipped} skipped")
+
+            mudahmy_details_inserted = 0
+            mudahmy_details_updated = 0
+            mudahmy_details_skipped = 0
+            logger.info("📋 Fetching MudahMY details data...")
+            mudahmy_details = await self.fetch_mudahmy_details_data(
+                days_back=days_back,
+                hours_back=hours_back,
+                since=since,
+                fetch_all=fetch_all,
+            )
+            if mudahmy_details:
+                mudahmy_details_inserted, mudahmy_details_updated, mudahmy_details_skipped = self.sync_mudahmy_details_direct(mudahmy_details)
+            logger.info(
+                f"✅ MudahMY details: {mudahmy_details_inserted} inserted, "
+                f"{mudahmy_details_updated} updated, {mudahmy_details_skipped} skipped"
+            )
             
             # STEP 5: Sync price history FIRST (before fill scripts)
             price_carlistmy_inserted = 0
@@ -771,6 +957,13 @@ class CarDataSyncService:
                     'cars_standard_updated': cars_standard_updated,
                     'normalize_predict_mudahmy_updated': normalize_predict_mudahmy_updated,
                 },
+                'details': {
+                    'mudahmy': {
+                        'inserted': mudahmy_details_inserted,
+                        'updated': mudahmy_details_updated,
+                        'skipped': mudahmy_details_skipped,
+                    }
+                },
                 'price_history': {
                     'carlistmy': {
                         'inserted': price_carlistmy_inserted,
@@ -817,6 +1010,16 @@ def display_summary(summary: Dict[str, Any]):
         print(f"   Cars Standard ID: {fill.get('cars_standard_updated', 0)} updated")
         print(f"   Normalize Predict MudahMY ID: {fill.get('normalize_predict_mudahmy_updated', 0)} updated")
     
+    details = summary.get('details', {})
+    mudahmy_details = details.get('mudahmy', {})
+    if mudahmy_details:
+        print(f"\n📋 DETAILS:")
+        print(
+            f"   MudahMY - Inserted: {mudahmy_details.get('inserted', 0)}, "
+            f"Updated: {mudahmy_details.get('updated', 0)}, "
+            f"Skipped: {mudahmy_details.get('skipped', 0)}"
+        )
+
     # Price history
     ph = summary['price_history']
     print(f"\n📈 PRICE HISTORY:")
@@ -858,6 +1061,7 @@ async def main():
         action='store_true',
         help="For the default 'today' mode, filter by information_ads_date instead of last_scraped_at.",
     )
+    parser.add_argument('--details-only', action='store_true', help='Sync MudahMY detail specifications only')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     
     args = parser.parse_args()
@@ -935,14 +1139,39 @@ async def main():
     # Run sync
     try:
         service = CarDataSyncService(config)
-        
-        summary = await service.sync_all_data(
-            days_back=days_back,
-            hours_back=hours_back,
-            since=since,
-            fetch_all=fetch_all,
-            use_ads_date_for_today=args.use_ads_date,
-        )
+
+        if args.details_only:
+            details = await service.fetch_mudahmy_details_data(
+                days_back=days_back,
+                hours_back=hours_back,
+                since=since,
+                fetch_all=fetch_all,
+            )
+            inserted, updated, skipped = service.sync_mudahmy_details_direct(details)
+            summary = {
+                'cars': {
+                    'total_fetched': 0,
+                    'inserted': 0,
+                    'updated': 0,
+                    'skipped': 0,
+                    'carlistmy_records': 0,
+                    'mudahmy_records': 0,
+                },
+                'fill_results': {},
+                'details': {'mudahmy': {'inserted': inserted, 'updated': updated, 'skipped': skipped}},
+                'price_history': {
+                    'carlistmy': {'inserted': 0, 'updated': 0, 'skipped': 0},
+                    'mudahmy': {'inserted': 0, 'updated': 0, 'skipped': 0},
+                },
+            }
+        else:
+            summary = await service.sync_all_data(
+                days_back=days_back,
+                hours_back=hours_back,
+                since=since,
+                fetch_all=fetch_all,
+                use_ads_date_for_today=args.use_ads_date,
+            )
         
         display_summary(summary)
         

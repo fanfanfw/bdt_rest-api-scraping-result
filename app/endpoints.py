@@ -6,6 +6,7 @@ from app.services import (
     create_api_key, clear_rate_limit, get_brands_list, get_models_list,
     get_variants_list, get_years_list, get_car_records, get_car_detail,
     get_statistics, get_today_data_count, get_price_estimation, get_brand_car_counts,
+    get_mudahmy_specifications_by_vehicle,
     get_telegram_daily_metrics, get_dashboard_summary, get_dashboard_yearly_trends,
     get_dashboard_competitor_watch_bulk,
     get_dashboard_scatter_chart,
@@ -486,6 +487,38 @@ async def get_car_detail_for_django(
     try:
         car_detail = await get_car_detail(car_id, source)
         return car_detail
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@django_router.get("/django/mudahmy/specifications", tags=["Django"])
+async def get_mudahmy_specifications_for_django(
+    brand: str = Query(..., example="TOYOTA"),
+    model: str = Query(..., example="COROLLA CROSS"),
+    variant: str = Query(..., example="HYBRID"),
+    year: Optional[int] = Query(None, example=2022),
+    x_django_key: str = Header(...)
+):
+    verify_django_key(x_django_key)
+    try:
+        return await get_mudahmy_specifications_by_vehicle(brand, model, variant, year)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mudahmy/specifications", tags=["Cars"])
+async def get_mudahmy_specifications_endpoint(
+    brand: str = Query(..., example="TOYOTA"),
+    model: str = Query(..., example="COROLLA CROSS"),
+    variant: str = Query(..., example="HYBRID"),
+    year: Optional[int] = Query(None, example=2022),
+):
+    try:
+        return await get_mudahmy_specifications_by_vehicle(brand, model, variant, year)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

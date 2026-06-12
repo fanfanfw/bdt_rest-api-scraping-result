@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -46,6 +47,7 @@ TB_UNIFIED_IND = os.getenv("TB_UNIFIED_IND", "cars_unified_ind")
 TB_PRICE_HISTORY = os.getenv("TB_PRICE_HISTORY", "price_history_unified")
 TB_CARS_STANDARD = os.getenv("TB_CARS_STANDARD", "cars_standard")
 TB_CARSOME = os.getenv("TB_CARSOME", "carsome")
+TB_UNIFIED_DETAILS = os.getenv("TB_UNIFIED_DETAILS", "cars_unified_details")
 _COMPETITOR_ALLOWED_STATUSES = {"active", "sold"}
 
 def _env_int(name: str, default: int) -> int:
@@ -518,6 +520,112 @@ def _build_price_vs_mileage_cte_for_source(source: Optional[str]) -> str:
         combined = f"{unified_select}\n\n        UNION ALL\n\n        {carsome_select}"
 
     return f"WITH combined AS (\n{combined}\n)"
+
+
+def _clean_spec_value(value: Any) -> Any:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned in {"", "-", "N/A", "null", "NULL"}:
+            return None
+        return cleaned
+    if isinstance(value, list):
+        cleaned_values = [_clean_spec_value(item) for item in value]
+        return [item for item in cleaned_values if item is not None]
+    return value
+
+
+def _normalize_car_specifications(specs: Any) -> Dict[str, Any]:
+    if isinstance(specs, str):
+        try:
+            specs = json.loads(specs)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(specs, dict):
+        return {}
+    return {
+        str(key): cleaned
+        for key, value in specs.items()
+        if (cleaned := _clean_spec_value(value)) is not None
+    }
+
+
+def _build_specs_sections(specs: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    section_keys = {
+        "identity": ["brand", "model", "variant", "series", "type", "year", "seats", "country_of_origin"],
+        "engine": ["engine_cc", "engine_type", "fuel_type", "fuel_tank_litres", "compression_ratio", "peak_power_kw", "peak_torque_nm"],
+        "transmission": ["transmission", "steering"],
+        "dimensions": ["length_mm", "width_mm", "height_mm", "wheel_base_mm", "kerb_weight_kg"],
+        "brakes_suspension": ["front_brakes", "rear_brakes", "front_suspension", "rear_suspension"],
+        "wheels_tyres": ["front_rims_inches", "rear_rims_inches", "front_tyres", "rear_tyres"],
+    }
+    return {
+        section: {key: specs[key] for key in keys if key in specs}
+        for section, keys in section_keys.items()
+    }
+
+
+def _row_get(row, key: str) -> Any:
+    return row[key] if row and key in row.keys() else None
+
+
+def _format_car_detail_response(row, details_row=None) -> Dict[str, Any]:
+    ads_tag = _row_get(row, "ads_tag")
+    created_at_value = _row_get(row, "created_at")
+    listing_id_value = _row_get(row, "listing_id")
+    series_value = _row_get(row, "series")
+    type_value = _row_get(row, "type")
+    images_value = _row_get(row, "images")
+    if images_value is None:
+        images_value = []
+    elif not isinstance(images_value, list):
+        images_value = [images_value]
+
+    specs = _normalize_car_specifications(_row_get(details_row, "car_specifications"))
+    details = None
+    if details_row:
+        details = {
+            "ad_highlights": _row_get(details_row, "ad_highlights"),
+            "description": _row_get(details_row, "description"),
+            "car_specifications": specs,
+            "specification_sections": _build_specs_sections(specs),
+        }
+
+    return {
+        'id': row['id'],
+        'source': row['source'],
+        'listing_id': listing_id_value,
+        'listing_url': row['listing_url'],
+        'brand': row['brand_norm'] or row['brand'],
+        'brand_raw': row['brand'],
+        'model': row['model_norm'] or row['model'],
+        'model_raw': row['model'],
+        'variant': row['variant_norm'] or row['variant'],
+        'variant_raw': row['variant'],
+        'series': series_value,
+        'type': type_value,
+        'condition': row['condition'],
+        'year': row['year'],
+        'mileage': row['mileage'],
+        'transmission': row['transmission'],
+        'seat_capacity': row['seat_capacity'],
+        'engine_cc': row['engine_cc'],
+        'fuel_type': row['fuel_type'],
+        'price': row['price'],
+        'location': row['location'],
+        'information_ads': row['information_ads'],
+        'images': images_value,
+        'status': row['status'],
+        'ads_tag': ads_tag,
+        'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
+        'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
+        'created_at': created_at_value.isoformat() if created_at_value else None,
+        'standard_info': {
+            'brand_norm': row['brand_norm'],
+            'model_norm': row['model_norm'],
+            'variant_norm': row['variant_norm']
+        } if row['brand_norm'] else None,
+        'details': details,
+    }
 
 
 def _build_combined_filters(
@@ -1849,7 +1957,7 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
         unified_query = f"""
             SELECT c.*, cs.brand_norm, cs.model_norm, cs.variant_norm
             FROM {TB_UNIFIED} c
-            INNER JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+            LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
             WHERE c.id = $1
         """
 
@@ -1862,51 +1970,22 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
             row = await conn.fetchrow(unified_query, *unified_params)
 
         if row:
-            ads_tag = row["ads_tag"] if "ads_tag" in row.keys() else None
-            created_at_value = row["created_at"] if "created_at" in row.keys() else None
-            listing_id_value = row["listing_id"] if "listing_id" in row.keys() else None
-            series_value = row["series"] if "series" in row.keys() else None
-            type_value = row["type"] if "type" in row.keys() else None
-            images_value = row["images"]
-            if images_value is None:
-                images_value = []
-            elif not isinstance(images_value, list):
-                images_value = [images_value]
-            return {
-                'id': row['id'],
-                'source': row['source'],
-                'listing_id': listing_id_value,
-                'listing_url': row['listing_url'],
-                'brand': row['brand_norm'] or row['brand'],
-                'brand_raw': row['brand'],
-                'model': row['model_norm'] or row['model'],
-                'model_raw': row['model'],
-                'variant': row['variant_norm'] or row['variant'],
-                'variant_raw': row['variant'],
-                'series': series_value,
-                'type': type_value,
-                'condition': row['condition'],
-                'year': row['year'],
-                'mileage': row['mileage'],
-                'transmission': row['transmission'],
-                'seat_capacity': row['seat_capacity'],
-                'engine_cc': row['engine_cc'],
-                'fuel_type': row['fuel_type'],
-                'price': row['price'],
-                'location': row['location'],
-                'information_ads': row['information_ads'],
-                'images': images_value,
-                'status': row['status'],
-                'ads_tag': ads_tag,
-                'last_scraped_at': row['last_scraped_at'].isoformat() if row['last_scraped_at'] else None,
-                'information_ads_date': row['information_ads_date'].isoformat() if row['information_ads_date'] else None,
-                'created_at': created_at_value.isoformat() if created_at_value else None,
-                'standard_info': {
-                    'brand_norm': row['brand_norm'],
-                    'model_norm': row['model_norm'],
-                    'variant_norm': row['variant_norm']
-                } if row['brand_norm'] else None
-            }
+            details_row = await conn.fetchrow(
+                f"""
+                    SELECT ad_highlights, description, car_specifications
+                    FROM {TB_UNIFIED_DETAILS}
+                    WHERE source = $1
+                      AND (
+                        listing_id = $2
+                        OR listing_url = $3
+                      )
+                    LIMIT 1
+                """,
+                row["source"],
+                str(row["listing_id"]) if row["listing_id"] is not None else None,
+                row["listing_url"],
+            )
+            return _format_car_detail_response(row, details_row)
 
         carsome_params: List[Any] = [car_id]
         carsome_query = f"""
@@ -1961,6 +2040,89 @@ async def get_car_detail(car_id: int, source: Optional[str] = None) -> Dict[str,
             }
 
         raise HTTPException(status_code=404, detail="Car not found")
+    finally:
+        await conn.close()
+
+
+async def get_mudahmy_specifications_by_vehicle(
+    brand: str,
+    model: str,
+    variant: str,
+    year: Optional[int] = None,
+) -> Dict[str, Any]:
+    conn = await get_local_db_connection()
+    try:
+        normalized_brand = brand.strip().upper()
+        normalized_model = model.strip().upper()
+        normalized_variant = variant.strip().upper()
+
+        params: List[Any] = [normalized_brand, normalized_model, normalized_variant]
+        year_filter = ""
+        if year is not None:
+            params.append(year)
+            year_filter = f"AND c.year = ${len(params)}"
+
+        rows = await conn.fetch(
+            f"""
+                WITH matched AS (
+                    SELECT
+                        c.year,
+                        d.car_specifications,
+                        COUNT(*)::int AS listing_count,
+                        MAX(c.last_scraped_at) AS last_scraped_at
+                    FROM {TB_UNIFIED} c
+                    LEFT JOIN {TB_CARS_STANDARD} cs ON c.cars_standard_id = cs.id
+                    INNER JOIN {TB_UNIFIED_DETAILS} d
+                        ON d.source = c.source
+                       AND (
+                            d.listing_id = c.listing_id
+                            OR d.listing_url = c.listing_url
+                       )
+                    WHERE c.source = 'mudahmy'
+                      AND COALESCE(cs.brand_norm, c.brand) = $1
+                      AND COALESCE(cs.model_norm, c.model) = $2
+                      AND COALESCE(cs.variant_norm, c.variant) = $3
+                      {year_filter}
+                      AND d.car_specifications IS NOT NULL
+                    GROUP BY c.year, d.car_specifications
+                )
+                SELECT
+                    year,
+                    car_specifications,
+                    listing_count,
+                    SUM(listing_count) OVER()::int AS matched_count
+                FROM matched
+                ORDER BY year DESC NULLS LAST, listing_count DESC, last_scraped_at DESC NULLS LAST
+            """,
+            *params,
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="MudahMY specifications not found")
+
+        specifications = []
+        for row in rows:
+            specs = _normalize_car_specifications(row["car_specifications"])
+            if specs:
+                specifications.append({
+                    "year": row["year"],
+                    "listing_count": row["listing_count"],
+                    "car_specifications": specs,
+                })
+
+        if not specifications:
+            raise HTTPException(status_code=404, detail="MudahMY specifications not found")
+
+        return {
+            "source": "mudahmy",
+            "filters": {
+                "brand": normalized_brand,
+                "model": normalized_model,
+                "variant": normalized_variant,
+                "year": year,
+            },
+            "matched_count": rows[0]["matched_count"],
+            "specifications": specifications,
+        }
     finally:
         await conn.close()
 

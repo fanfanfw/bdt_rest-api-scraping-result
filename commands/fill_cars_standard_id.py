@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 # Load environment variables
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parent.parent
@@ -169,7 +169,7 @@ def find_cars_standard_id(cur, brand, model_group, model, variant):
     return cars_standard_id
 
 
-def fill_cars_standard_id_for_source(source, batch_size=500, table_name=DEFAULT_TABLE_NAME):
+def fill_cars_standard_id_for_source(source, batch_size=500, table_name=DEFAULT_TABLE_NAME, database=None):
     """
     Mengisi cars_standard_id yang NULL untuk source tertentu
     dengan batch commit untuk menyimpan progress secara berkala
@@ -182,11 +182,10 @@ def fill_cars_standard_id_for_source(source, batch_size=500, table_name=DEFAULT_
 
     table_name = validate_table_name(table_name)
 
-    # Database configuration
     db_config = {
         'host': os.getenv('DB_HOST', '127.0.0.1'),
         'port': int(os.getenv('DB_PORT', 5432)),
-        'database': os.getenv('DB_NAME', 'db_test'),
+        'database': database or os.getenv('DB_NAME', 'db_test'),
         'user': os.getenv('DB_USER', 'fanfan'),
         'password': os.getenv('DB_PASSWORD', 'cenanun')
     }
@@ -325,7 +324,7 @@ def fill_cars_standard_id_for_source(source, batch_size=500, table_name=DEFAULT_
             conn.close()
 
 
-def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch_size=500):
+def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch_size=500, database=None):
     """
     Mengisi cars_standard_id untuk semua source yang diberikan.
     Default tetap source Malaysia pada tabel cars_unified.
@@ -335,7 +334,9 @@ def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch
 
     print("📋 Fill Cars Standard ID")
     print("-" * 50)
-    print(f"🗄️ Database: {os.getenv('DB_NAME', 'db_test')}")
+    selected_database = database or os.getenv('DB_NAME', 'db_test')
+
+    print(f"🗄️ Database: {selected_database}")
     print(f"🔧 Host: {os.getenv('DB_HOST', '127.0.0.1')}:{os.getenv('DB_PORT', 5432)}")
     print(f"📦 Table: {table_name}")
     print(f"📌 Sources: {', '.join(sources)}")
@@ -353,7 +354,7 @@ def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch
         db_config = {
             'host': os.getenv('DB_HOST', '127.0.0.1'),
             'port': int(os.getenv('DB_PORT', 5432)),
-            'database': os.getenv('DB_NAME', 'db_test'),
+            'database': selected_database,
             'user': os.getenv('DB_USER', 'fanfan'),
             'password': os.getenv('DB_PASSWORD', 'cenanun')
         }
@@ -384,6 +385,7 @@ def fill_all_cars_standard_id(sources=None, table_name=DEFAULT_TABLE_NAME, batch
                 source,
                 batch_size=batch_size,
                 table_name=table_name,
+                database=selected_database,
             )
             total_updated += updated
             total_failed += failed
@@ -455,10 +457,12 @@ if __name__ == "__main__":
     parser.add_argument("--table", default=DEFAULT_TABLE_NAME, help="Target table name, default: cars_unified")
     parser.add_argument(
         "--sources",
+        "--source",
         default=",".join(DEFAULT_SOURCES),
         help="Comma-separated sources, default: carlistmy,mudahmy",
     )
     parser.add_argument("--batch-size", type=int, default=500, help="Commit batch size")
+    parser.add_argument("--database", help="Override DB_NAME from .env")
     args = parser.parse_args()
 
     try:
@@ -467,6 +471,7 @@ if __name__ == "__main__":
             sources=selected_sources,
             table_name=args.table,
             batch_size=args.batch_size,
+            database=args.database,
         )
         print("\n" + "=" * 60)
         print("HASIL AKHIR:")

@@ -37,7 +37,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 if load_dotenv:
-    load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
+    load_dotenv(dotenv_path=BASE_DIR / ".env", override=False)
 
 try:
     from commands.fill_cars_standard_id import fill_all_cars_standard_id
@@ -78,11 +78,11 @@ def parse_sources(raw_sources: str) -> List[str]:
     return sorted(set(sources))
 
 
-def get_db_config() -> Dict[str, object]:
+def get_db_config(database: str = None) -> Dict[str, object]:
     return {
         "host": os.getenv("DB_HOST", "127.0.0.1"),
         "port": int(os.getenv("DB_PORT", 5432)),
-        "database": os.getenv("DB_NAME", "db_test"),
+        "database": database or os.getenv("DB_NAME", "db_test"),
         "user": os.getenv("DB_USER", "fanfan"),
         "password": os.getenv("DB_PASSWORD", "cenanun"),
     }
@@ -129,13 +129,14 @@ def insert_missing_cars_standard(
     table_name: str,
     sources: Sequence[str],
     dry_run: bool = False,
+    database: str = None,
 ) -> Dict[str, object]:
     table_name = validate_table_name(table_name)
     sources = sorted(set(sources))
     if not sources:
         raise ValueError("At least one source is required")
 
-    db_config = get_db_config()
+    db_config = get_db_config(database)
     conn = None
 
     try:
@@ -329,6 +330,7 @@ def main() -> None:
         help="After inserting cars_standard rows, run fill_cars_standard_id for the same table/sources",
     )
     parser.add_argument("--batch-size", type=int, default=500, help="Batch size for --fill-after")
+    parser.add_argument("--database", help="Override DB_NAME from .env")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -344,6 +346,7 @@ def main() -> None:
         table_name=table_name,
         sources=sources,
         dry_run=args.dry_run,
+        database=args.database,
     )
     print_result(result)
 
@@ -357,6 +360,7 @@ def main() -> None:
                 sources=sources,
                 table_name=table_name,
                 batch_size=args.batch_size,
+                database=args.database,
             )
             print("\nFill Cars Standard ID")
             print("-" * 50)

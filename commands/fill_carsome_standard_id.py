@@ -10,6 +10,7 @@ Usage:
     python fill_carsome_standard_id.py
 """
 
+import argparse
 import os
 import sys
 import logging
@@ -23,7 +24,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Pastikan environment variable termuat
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 # Tambahkan project root ke PYTHONPATH (mirroring fill_cars_standard_id.py)
 project_root = Path(__file__).resolve().parent.parent
@@ -126,12 +127,12 @@ def find_cars_standard_id(
     return None
 
 
-def map_carsome_cars_standard(batch_size: int = 500) -> Dict[str, Any]:
+def map_carsome_cars_standard(batch_size: int = 500, database: Optional[str] = None) -> Dict[str, Any]:
     """Isi kolom cars_standard_id untuk record carsome."""
     db_config = {
         "host": os.getenv("DB_HOST", "127.0.0.1"),
         "port": int(os.getenv("DB_PORT", 5432)),
-        "database": os.getenv("DB_NAME", "db_test"),
+        "database": database or os.getenv("DB_NAME", "db_test"),
         "user": os.getenv("DB_USER", "fanfan"),
         "password": os.getenv("DB_PASSWORD", "cenanun"),
     }
@@ -263,8 +264,13 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    parser = argparse.ArgumentParser(description="Fill cars_standard_id for carsome")
+    parser.add_argument("--batch-size", type=int, default=500, help="Commit batch size")
+    parser.add_argument("--database", help="Override DB_NAME from .env")
+    args = parser.parse_args()
+
     try:
-        result = map_carsome_cars_standard()
+        result = map_carsome_cars_standard(batch_size=args.batch_size, database=args.database)
         print("\n" + "=" * 60)
         print("HASIL AKHIR:")
         print("=" * 60)
